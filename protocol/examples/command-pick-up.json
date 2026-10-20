@@ -1,0 +1,2 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0019-4000-8000-000000000019", "ts": 1760950012000, "from": "hub", "to": "mc",
+ "body": {"name": "pick_up", "args": {"item": "minecraft:oak_log", "radius": 8}}}

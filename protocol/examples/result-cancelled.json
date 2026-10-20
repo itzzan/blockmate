@@ -1,0 +1,2 @@
+{"v": 1, "type": "result", "id": "0a1b2c3d-0033-4000-8000-000000000033", "ts": 1760950023000, "from": "mc", "to": "hub",
+ "body": {"command_id": "0a1b2c3d-0016-4000-8000-000000000016", "status": "cancelled"}}

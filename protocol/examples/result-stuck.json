@@ -1,0 +1,2 @@
+{"v": 1, "type": "result", "id": "0a1b2c3d-0031-4000-8000-000000000031", "ts": 1760950021000, "from": "mc", "to": "hub",
+ "body": {"command_id": "0a1b2c3d-0026-4000-8000-000000000026", "status": "failed", "reason": "stuck"}}

@@ -1,0 +1,2 @@
+{"v": 1, "type": "ack", "id": "0a1b2c3d-0023-4000-8000-000000000023", "ts": 1760950013050, "from": "mc", "to": "hub",
+ "body": {"command_id": "0a1b2c3d-0020-4000-8000-000000000020", "accepted": false, "reason": "rejected"}}

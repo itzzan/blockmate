@@ -2,6 +2,7 @@
 data/
 logs/
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 build/
 .gradle/
 config.yaml
@@ -16,3 +17,9 @@ mod/run/
 ops/*.local.json
 *.local.*
 我的伙伴-记录.md
+
+# IDE 杂项
+.idea/
+*.iml
+.vscode/
+out/

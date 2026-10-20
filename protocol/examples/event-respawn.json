@@ -1,0 +1,2 @@
+{"v": 1, "type": "event", "id": "0a1b2c3d-0013-4000-8000-000000000013", "ts": 1760950006000, "from": "mc", "to": "hub",
+ "body": {"kind": "respawn", "pos": {"x": 0.5, "y": 65.0, "z": 0.5}, "dim": "minecraft:overworld"}}

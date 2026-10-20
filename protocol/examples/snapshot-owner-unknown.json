@@ -1,0 +1,3 @@
+{"v": 1, "type": "snapshot", "id": "0a1b2c3d-0009-4000-8000-000000000009", "ts": 1760950002000, "from": "mc", "to": "hub",
+ "body": {"in_world": true, "pos": {"x": 120.5, "y": 64.0, "z": -33.2}, "dim": "minecraft:overworld", "health": 20.0, "food": 18,
+          "inventory": {}, "owner": {"visible": false}}}

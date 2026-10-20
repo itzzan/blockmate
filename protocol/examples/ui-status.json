@@ -1,0 +1,2 @@
+{"v": 1, "type": "status", "id": "0a1b2c3d-0043-4000-8000-000000000043", "ts": 1760950030000, "from": "hub", "to": "ui",
+ "body": {"companion": {"online": false}, "keeper": {"connected": false}, "model": {"ok": true}}}

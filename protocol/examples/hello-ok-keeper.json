@@ -1,0 +1,2 @@
+{"v": 1, "type": "hello", "id": "0a1b2c3d-0005-4000-8000-000000000005", "ts": 1760950000010, "from": "hub", "to": "keeper",
+ "body": {"ok": true, "server_time": 1760950000010, "protocol_v": 1, "desired": "stopped"}}

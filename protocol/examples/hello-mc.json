@@ -1,0 +1,2 @@
+{"v": 1, "type": "hello", "id": "0a1b2c3d-0001-4000-8000-000000000001", "ts": 1760950000000, "from": "mc", "to": "hub",
+ "body": {"token": "example-token", "role": "mc", "player": "Blockmate", "owner": "Steve", "mod_version": "0.1.0", "protocol_v": 1}}

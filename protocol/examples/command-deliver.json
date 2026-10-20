@@ -1,0 +1,2 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0020-4000-8000-000000000020", "ts": 1760950013000, "from": "hub", "to": "mc",
+ "body": {"name": "deliver", "args": {"item": "minecraft:oak_log", "count": 8, "to": "Steve"}}}

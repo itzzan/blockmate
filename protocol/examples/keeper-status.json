@@ -1,0 +1,2 @@
+{"v": 1, "type": "keeper_status", "id": "0a1b2c3d-0039-4000-8000-000000000039", "ts": 1760950028000, "from": "keeper", "to": "hub",
+ "body": {"running": true, "pid": 12345, "desired": "running", "last_start_ts": 1760950000000, "restarts_10min": 1, "gave_up": false, "keeper_version": "0.1.0"}}

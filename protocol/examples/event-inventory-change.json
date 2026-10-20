@@ -1,0 +1,2 @@
+{"v": 1, "type": "event", "id": "0a1b2c3d-0017-4000-8000-000000000017", "ts": 1760950009000, "from": "mc", "to": "hub",
+ "body": {"kind": "inventory_change", "item": "minecraft:oak_log", "delta": 8, "count": 8}}

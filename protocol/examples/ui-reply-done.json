@@ -1,0 +1,2 @@
+{"v": 1, "type": "reply", "id": "0a1b2c3d-0042-4000-8000-000000000042", "ts": 1760950029900, "from": "hub", "to": "ui",
+ "body": {"reply_id": "r-1", "in_reply_to": "0a1b2c3d-0040-4000-8000-000000000040", "chunk": "了。", "done": true, "message_id": "m-3"}}

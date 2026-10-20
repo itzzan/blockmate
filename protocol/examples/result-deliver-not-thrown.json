@@ -1,0 +1,2 @@
+{"v": 1, "type": "result", "id": "0a1b2c3d-0030-4000-8000-000000000030", "ts": 1760950020000, "from": "mc", "to": "hub",
+ "body": {"command_id": "0a1b2c3d-0020-4000-8000-000000000020", "status": "failed", "reason": "target_too_far", "detail": {"delivery": "not_thrown", "count": 0}}}

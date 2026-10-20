@@ -1,0 +1,2 @@
+{"v": 1, "type": "hello", "id": "0a1b2c3d-0007-4000-8000-000000000007", "ts": 1760950000010, "from": "hub", "to": "ui",
+ "body": {"ok": false, "protocol_v": 1, "error": "token 不对"}}

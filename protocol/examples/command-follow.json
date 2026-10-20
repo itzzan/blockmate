@@ -1,0 +1,2 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0016-4000-8000-000000000016", "ts": 1760950010000, "from": "hub", "to": "mc",
+ "body": {"name": "follow", "args": {}}}

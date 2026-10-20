@@ -1,0 +1,2 @@
+{"v": 1, "type": "result", "id": "0a1b2c3d-0034-4000-8000-000000000034", "ts": 1760950024000, "from": "mc", "to": "hub",
+ "body": {"command_id": "0a1b2c3d-0018-4000-8000-000000000018", "status": "failed", "reason": "timeout", "detail": {"stationary": false, "attempts": 3}}}

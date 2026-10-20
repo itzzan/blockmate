@@ -1,0 +1,2 @@
+{"v": 1, "type": "event", "id": "0a1b2c3d-0014-4000-8000-000000000014", "ts": 1760950007000, "from": "mc", "to": "hub",
+ "body": {"kind": "kicked", "reason": "You are not white-listed on this server!"}}

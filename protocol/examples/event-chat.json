@@ -1,0 +1,2 @@
+{"v": 1, "type": "event", "id": "0a1b2c3d-0011-4000-8000-000000000011", "ts": 1760950004000, "from": "mc", "to": "hub",
+ "body": {"kind": "chat", "from": "Steve", "text": "跟我来"}}

@@ -1,0 +1,2 @@
+{"v": 1, "type": "keeper_cmd", "id": "0a1b2c3d-0038-4000-8000-000000000038", "ts": 1760950027000, "from": "hub", "to": "keeper",
+ "body": {"action": "start"}}
