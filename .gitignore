@@ -1,0 +1,18 @@
+# 手册 5.1 规定：数据、日志、编译产物、含密码的配置不入库
+data/
+logs/
+*.jar
+build/
+.gradle/
+config.yaml
+
+# 补充：keeper 的配置也含 token；macOS 杂项；本地开发服务器；ForgeGradle 的运行目录
+keeper.yaml
+.DS_Store
+*.log
+mod/run/
+
+# 含真实邮箱/地址的本地文件和个人记录，永远不入库
+ops/*.local.json
+*.local.*
+我的伙伴-记录.md
