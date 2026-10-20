@@ -172,11 +172,11 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | follow | — | 跟随主人，没有"完成"，只会被替换或停止 |
 | come_here | — | 走到主人当前位置 2 格内 |
 | wait_here | — | 停下留在原地 |
-| stop | — | 立刻停。网页"停"按钮和模型的 stop 工具都走这条 |
+| stop | — | 立刻停。网页"停"按钮和模型的 stop 工具都走这条。模组先给手头任务发 result cancelled，再回 stop 的 ack 和 result |
 | pick_up | item（物品 id），radius（格，默认 8） | 捡半径内的该物品 |
 | deliver | item，count，to（玩家名，默认主人） | 走到主人 3 格内丢出物品 |
 | report_status | — | 让模组立刻发一条完整 snapshot |
-| cancel | command_id | 取消指定任务。模组对它只回 ack，被取消的任务自己回 result cancelled |
+| cancel | command_id | 取消指定任务。模组回 ack，再给被取消的任务发 result cancelled，最后给 cancel 自己回 result ok（手册 5.4：stop 和 cancel 立即回 result）。hub 对 stop / cancel 自己的 result 只记 events，不进任务槽 |
 | rejoin | — | 重新连接服务器 |
 
 ### 7.2 ack
