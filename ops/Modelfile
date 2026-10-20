@@ -1,5 +1,5 @@
 # 手册 4.3：伙伴专用模型 companion-local 的定义。
-# 用法：cd ~/companion/ops && ollama create companion-local -f Modelfile
+# 用法：cd 到仓库的 ops/ 目录，ollama create companion-local -f Modelfile
 # 人设不写在这里，由后台每次请求时发送（手册第 5 步），改人设不用重建模型。
 FROM qwen3.8:27b
 PARAMETER num_ctx 16384

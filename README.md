@@ -2,7 +2,7 @@
 
 方块世界里的搭子。用中文和我聊天，并以独立玩家身份在我的 Minecraft 1.20.1 原版服务器里跟随、停下、过来、捡起、交付物品。
 
-GitHub：itzzan/blockmate。本地文件夹沿用手册里的名字 `companion`，`~/companion` 是指向它的软链接。
+GitHub：itzzan/blockmate。本地文件夹也叫 `blockmate`。手册（docs/guide.md）里写的 `~/companion` 在这台机器上就是这个文件夹，没有做软链接，照手册敲命令时把路径换成它。
 
 ## 目录
 
