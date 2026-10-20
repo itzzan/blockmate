@@ -1,0 +1,29 @@
+# Blockmate 后台配置（细则第 12 节）。拷成 config.yaml 再填，config.yaml 不进 git。
+# 所有相对路径都相对这个文件所在的目录。
+
+port: 8787                      # HTTP / WebSocket 端口
+token: "CHANGE_ME"              # 所有连接（网页、模组、keeper）的口令。自己生成一串长随机字符，存进密码管理器
+owner_name: "Steve"             # 主人（你）的游戏玩家名
+companion_name: "Blockmate"     # 伙伴的游戏玩家名，和白名单、离线账号一致
+persona_path: "persona.md"      # 人设文件，你自己写；改了后台自动重新读，不用重启
+data_dir: "data"                # SQLite（companion.db）和备份（backup/）放哪
+history_n: 20                   # 每次给模型看最近几条对话
+
+ollama:
+  base_url: "http://127.0.0.1:11434"   # 在 Mac mini 上部署时改成 http://<mbp的100.x>:11434
+  model: "companion-local"             # 固定这个名字，换底层模型只改 Modelfile
+  api: "native"                        # native = Ollama 原生 /api/chat（关得掉思考）；openai = /v1/chat/completions
+  first_token_timeout_s: 30            # 等首字的秒数
+  total_timeout_s: 60                  # 一次回答的总秒数
+
+timeouts_s:                     # 任务超时（细则第 8 节）；follow 没有超时
+  ack: 3                        # 模组多久没 ack 算没反应（executor_unresponsive）
+  come_here: 90
+  pick_up: 45
+  deliver: 90
+  stop: 5
+  rejoin: 60
+
+episode_time: "23:55"           # 每天几点把当天的事写成一条日记
+backup_time: "03:30"            # 每天几点 VACUUM INTO 备份，保留 14 份
+log_level: "INFO"               # INFO 不含聊天原文；排错时可改 DEBUG

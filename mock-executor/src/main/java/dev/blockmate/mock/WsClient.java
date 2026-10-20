@@ -34,6 +34,7 @@ public final class WsClient implements WebSocket.Listener, Simulator.Sink {
     private WebSocket ws;
     private CompletableFuture<?> sendChain = CompletableFuture.completedFuture(null);
     private int attempts;
+    private volatile boolean stopped;
 
     public WsClient(URI hub, String token, ScheduledExecutorService exec, Consumer<String> console) {
         this.uri = withToken(hub, token);
@@ -55,7 +56,23 @@ public final class WsClient implements WebSocket.Listener, Simulator.Sink {
         exec.execute(this::connect);
     }
 
+    /** 主动断开并不再重连（测试和退出时用）。 */
+    public void stop() {
+        stopped = true;
+        exec.execute(() -> {
+            WebSocket socket = ws;
+            ws = null;
+            if (socket != null) {
+                socket.sendClose(WebSocket.NORMAL_CLOSURE, "bye");
+            }
+            simulator.onDisconnected();
+        });
+    }
+
     private void connect() {
+        if (stopped) {
+            return;
+        }
         http.newWebSocketBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .buildAsync(uri, this)
@@ -122,7 +139,7 @@ public final class WsClient implements WebSocket.Listener, Simulator.Sink {
     }
 
     private void lost(String why) {
-        if (ws == null) {
+        if (ws == null || stopped) {
             return;
         }
         ws = null;

@@ -1,0 +1,637 @@
+package dev.blockmate.server.hub;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import dev.blockmate.protocol.Ack;
+import dev.blockmate.protocol.Chat;
+import dev.blockmate.protocol.Command;
+import dev.blockmate.protocol.CommandName;
+import dev.blockmate.protocol.Envelope;
+import dev.blockmate.protocol.Event;
+import dev.blockmate.protocol.Hello;
+import dev.blockmate.protocol.HelloOk;
+import dev.blockmate.protocol.KeeperCmd;
+import dev.blockmate.protocol.KeeperControl;
+import dev.blockmate.protocol.KeeperStatus;
+import dev.blockmate.protocol.MessageType;
+import dev.blockmate.protocol.Notice;
+import dev.blockmate.protocol.Peer;
+import dev.blockmate.protocol.PreferenceAction;
+import dev.blockmate.protocol.Preferences;
+import dev.blockmate.protocol.Progress;
+import dev.blockmate.protocol.ProtocolCodec;
+import dev.blockmate.protocol.Reply;
+import dev.blockmate.protocol.Result;
+import dev.blockmate.protocol.Snapshot;
+import dev.blockmate.protocol.Status;
+import dev.blockmate.protocol.TaskInfo;
+import dev.blockmate.server.Config;
+import dev.blockmate.server.brain.Brain;
+import dev.blockmate.server.brain.BrainContext;
+import dev.blockmate.server.brain.Tools;
+import dev.blockmate.server.gateway.ModelException;
+import dev.blockmate.server.gateway.ModelReply;
+import dev.blockmate.server.gateway.ToolCall;
+import dev.blockmate.server.memory.Memory;
+import dev.blockmate.server.memory.Preference;
+import dev.blockmate.server.memory.StoredEvent;
+import dev.blockmate.server.memory.StoredMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+
+/**
+ * Hub（手册 5.5 第 2 条）：管连接、管任务槽、把网页的话交给 Brain、把工具调用变成 command、把结果变成人话。
+ * 所有方法都在 hub 线程上跑（WsEndpoints 通过 {@link #submit} 投递）；模型调用放到 brainExec 上，回来再投递回 hub 线程。
+ */
+public final class Hub {
+
+    /** 一条连接的出口。 */
+    public interface Sender {
+        void send(Envelope envelope);
+
+        void close(int code, String reason);
+    }
+
+    private static final Logger log = LoggerFactory.getLogger(Hub.class);
+    private static final long STATUS_INTERVAL_MS = 5000;
+    private static final String NOTICE_OFFLINE = "我现在不在游戏里";
+    private static final String NOTICE_MODEL_DOWN = "我脑子有点转不动，等一下再和我说";
+
+    private final Config cfg;
+    private final Memory memory;
+    private final Brain brain;
+    private final ScheduledExecutorService exec;
+    private final ExecutorService brainExec;
+    private final TaskSlot slot;
+
+    private Sender mc;
+    private Sender keeper;
+    private final List<Sender> uis = new ArrayList<>();
+    private Snapshot lastSnapshot;
+    private boolean mcOnline;
+    private KeeperStatus keeperStatus;
+    private String keeperDesired;
+    private boolean modelOk = true;
+    private long lastStatusPush;
+    /** stop 命令的 id → 来源（button / model）。 */
+    private final Map<String, String> stopCommands = new HashMap<>();
+    /** command id → 触发它的那条 owner 消息 id（回复时作为 in_reply_to）。 */
+    private final Map<String, String> commandSource = new HashMap<>();
+
+    public Hub(Config cfg, Memory memory, Brain brain, ScheduledExecutorService exec, ExecutorService brainExec) {
+        this.cfg = cfg;
+        this.memory = memory;
+        this.brain = brain;
+        this.exec = exec;
+        this.brainExec = brainExec;
+        this.slot = new TaskSlot(cfg.timeouts);
+        this.keeperDesired = memory.setting("keeper_desired").orElse("stopped");
+    }
+
+    public void submit(Runnable r) {
+        exec.execute(() -> {
+            try {
+                r.run();
+            } catch (RuntimeException e) {
+                log.error("hub task failed", e);
+            }
+        });
+    }
+
+    // ---------------- /ws/mc ----------------
+
+    public void mcConnected(Sender s, Hello hello) {
+        if (mc != null && mc != s) {
+            mc.close(4409, "replaced");
+        }
+        mc = s;
+        mcOnline = true;
+        lastSnapshot = null;
+        s.send(envelope(MessageType.HELLO, Peer.MC, HelloOk.ok(now())));
+        log.info("executor online player={} mod={}", hello.player(), hello.modVersion());
+        memory.saveEvent("executor_online", null, null, obj("player", hello.player()));
+        pushStatus(true);
+    }
+
+    public void mcDisconnected(Sender s) {
+        if (mc != s) {
+            return;
+        }
+        mc = null;
+        mcOnline = false;
+        lastSnapshot = null;
+        log.info("executor offline");
+        memory.saveEvent("executor_offline", null, null, null);
+        slot.onExecutorLost().ifPresent(this::handleSynth);
+        notice("伙伴掉线了", "warn");
+        pushStatus(true);
+        maybeWriteEpisodeOnOffline();
+    }
+
+    public void mcMessage(Envelope e) {
+        switch (e.type()) {
+            case SNAPSHOT -> onSnapshot(ProtocolCodec.bodyAs(e, Snapshot.class));
+            case EVENT -> onEvent(ProtocolCodec.bodyAs(e, Event.class));
+            case ACK -> onAck(ProtocolCodec.bodyAs(e, Ack.class));
+            case PROGRESS -> onProgress(ProtocolCodec.bodyAs(e, Progress.class));
+            case RESULT -> onResult(ProtocolCodec.bodyAs(e, Result.class));
+            default -> log.debug("mc sent {} ignored", e.type());
+        }
+    }
+
+    private void onSnapshot(Snapshot s) {
+        boolean changed = lastSnapshot == null
+                || lastSnapshot.inWorld() != s.inWorld()
+                || !Objects.equals(lastSnapshot.dim(), s.dim())
+                || !Objects.equals(roundHealth(lastSnapshot), roundHealth(s))
+                || (lastSnapshot.task() == null) != (s.task() == null);
+        lastSnapshot = s;
+        if (changed) {
+            pushStatus(true);
+        }
+    }
+
+    private static Long roundHealth(Snapshot s) {
+        return s.health() == null ? null : Math.round(s.health());
+    }
+
+    private void onEvent(Event ev) {
+        if (ev.kind() == null) {
+            return;
+        }
+        switch (ev.kind()) {
+            case CHAT -> {
+                if (ev.text() != null && !ev.text().isBlank()) {
+                    memory.saveMessage("owner_ingame", ev.text(), null, null);
+                }
+                log.info("event chat from_owner=true len={}", ev.text() == null ? 0 : ev.text().length());
+                memory.saveEvent("chat", null, null, obj("len", ev.text() == null ? 0 : ev.text().length()));
+            }
+            case DEATH -> {
+                memory.saveEvent("death", null, null, ProtocolCodec.toBody(ev));
+                notice("伙伴死了", "warn");
+            }
+            case RESPAWN -> {
+                memory.saveEvent("respawn", null, null, ProtocolCodec.toBody(ev));
+                notice("伙伴重生了", "info");
+            }
+            default -> memory.saveEvent(ev.kind().name().toLowerCase(), null, null, ProtocolCodec.toBody(ev));
+        }
+        log.info("event kind={}", ev.kind().name().toLowerCase());
+        pushStatus(true);
+    }
+
+    private void onAck(Ack a) {
+        TaskSlot.AckOutcome outcome = slot.onAck(a.commandId(), a.accepted());
+        memory.saveEvent("ack", a.commandId(), commandSource.get(a.commandId()), ProtocolCodec.toBody(a));
+        log.info("ack cmd_id={} accepted={} outcome={}", a.commandId(), a.accepted(), outcome);
+        if (outcome == TaskSlot.AckOutcome.REJECTED) {
+            CommandName name = nameOf(a.commandId());
+            say(name, Result.failed(a.commandId(), a.reason() == null ? dev.blockmate.protocol.Reason.REJECTED : a.reason()));
+        }
+        pushStatus(true);
+    }
+
+    private final Map<String, CommandName> commandNames = new HashMap<>();
+
+    private CommandName nameOf(String commandId) {
+        return commandNames.getOrDefault(commandId, CommandName.REPORT_STATUS);
+    }
+
+    private void onProgress(Progress p) {
+        memory.saveEvent("progress", p.commandId(), null, ProtocolCodec.toBody(p));
+    }
+
+    private void onResult(Result r) {
+        TaskSlot.ResultOutcome outcome = slot.onResult(r.commandId());
+        memory.saveEvent("result", r.commandId(), commandSource.get(r.commandId()), ProtocolCodec.toBody(r));
+        log.info("result cmd_id={} status={} reason={} outcome={}", r.commandId(), r.status(), r.reason(), outcome);
+        String stopSource = stopCommands.remove(r.commandId());
+        if (stopSource != null) {
+            if ("button".equals(stopSource)) {
+                notice(r.status() == dev.blockmate.protocol.ResultStatus.OK ? "已停下" : "没停住：" + Brain.describeResult(CommandName.STOP, r), "info");
+            } else {
+                say(CommandName.STOP, r);
+            }
+            commandNames.remove(r.commandId());
+            pushStatus(true);
+            return;
+        }
+        if (outcome == TaskSlot.ResultOutcome.FINISHED) {
+            say(nameOf(r.commandId()), r);
+        }
+        if (outcome != TaskSlot.ResultOutcome.UNKNOWN) {
+            commandNames.remove(r.commandId());
+        }
+        pushStatus(true);
+    }
+
+    private void handleSynth(TaskSlot.Synth s) {
+        Result r = Result.failed(s.commandId(), s.reason());
+        memory.saveEvent("result", s.commandId(), s.sourceMessageId(), ProtocolCodec.toBody(r));
+        log.info("result_synth cmd_id={} reason={}", s.commandId(), s.reason());
+        commandNames.remove(s.commandId());
+        say(s.name(), r);
+        pushStatus(true);
+    }
+
+    // ---------------- /ws/ui ----------------
+
+    public void uiConnected(Sender s) {
+        uis.add(s);
+        s.send(envelope(MessageType.HELLO, Peer.UI,
+                new HelloOk(true, now(), ProtocolCodec.VERSION, null, status(), historyJson(), null)));
+        log.info("ui connected count={}", uis.size());
+        pushPreferences(s);
+    }
+
+    public void uiDisconnected(Sender s) {
+        uis.remove(s);
+        log.info("ui disconnected count={}", uis.size());
+    }
+
+    public void uiMessage(Sender s, Envelope e) {
+        switch (e.type()) {
+            case CHAT -> onChat(e);
+            case STOP -> onStopButton();
+            case PREFERENCE_ACTION -> {
+                PreferenceAction pa = ProtocolCodec.bodyAs(e, PreferenceAction.class);
+                boolean ok = memory.decidePreference(pa.id(), pa.action());
+                log.info("preference_action id={} action={} ok={}", pa.id(), pa.action(), ok);
+                pushPreferences(null);
+            }
+            case KEEPER_CONTROL -> keeperControl(ProtocolCodec.bodyAs(e, KeeperControl.class).action());
+            default -> log.debug("ui sent {} ignored", e.type());
+        }
+    }
+
+    private void onChat(Envelope env) {
+        Chat chat = ProtocolCodec.bodyAs(env, Chat.class);
+        if (chat.text() == null || chat.text().isBlank()) {
+            return;
+        }
+        String text = chat.text().strip();
+        StoredMessage msg = memory.saveMessage("owner", text, null, null);
+        log.info("chat_in len={} msg_id={}", text.length(), msg.id());
+        String replyId = UUID.randomUUID().toString();
+        BrainContext ctx = context();
+        brainExec.execute(() -> {
+            try {
+                ModelReply reply = brain.decide(text, ctx, chunk -> submit(() -> replyChunk(replyId, env.id(), chunk)));
+                submit(() -> onDecision(replyId, env.id(), msg, reply));
+            } catch (ModelException ex) {
+                submit(() -> onModelFailure(replyId, env.id(), ex));
+            }
+        });
+    }
+
+    private void onDecision(String replyId, String inReplyTo, StoredMessage src, ModelReply reply) {
+        modelOk = true;
+        String toolJson = reply.hasToolCalls() ? ProtocolCodec.gson().toJson(reply.toolCalls()) : null;
+        List<String> notes = new ArrayList<>();
+        boolean actionIssued = false;
+        for (ToolCall tc : reply.toolCalls()) {
+            if (Tools.REMEMBER.equals(tc.name())) {
+                String t = tc.arguments() != null && tc.arguments().has("text") ? tc.arguments().get("text").getAsString() : "";
+                if (!t.isBlank()) {
+                    memory.addPendingPreference(t.strip(), src.id());
+                    log.info("preference_pending len={}", t.length());
+                    pushPreferences(null);
+                }
+            } else if (Tools.isAction(tc.name())) {
+                if (actionIssued) {
+                    notes.add("一次只做一件，先做第一个。");
+                    continue;
+                }
+                CommandName name = Tools.commandOf(tc.name());
+                if (name == null) {
+                    continue;
+                }
+                if (!companionInWorld()) {
+                    notes.add(NOTICE_OFFLINE + "。");
+                    log.info("action_while_offline name={}", name.wire());
+                    continue;
+                }
+                issueCommand(name, tc.arguments(), src.id());
+                actionIssued = true;
+            } else {
+                log.warn("unknown tool {}", tc.name());
+            }
+        }
+        String text = reply.text().strip();
+        if (!notes.isEmpty()) {
+            String extra = String.join("", notes);
+            replyChunk(replyId, inReplyTo, text.isEmpty() ? extra : "\n" + extra);
+            text = text.isEmpty() ? extra : text + "\n" + extra;
+        }
+        StoredMessage saved = memory.saveMessage("companion", text, src.id(), toolJson);
+        replyDone(replyId, inReplyTo, saved.id());
+        log.info("chat_out len={} action={} msg_id={}", text.length(), actionIssued, saved.id());
+        pushStatus(true);
+    }
+
+    private void onModelFailure(String replyId, String inReplyTo, ModelException ex) {
+        modelOk = false;
+        log.warn("model_fail kind={} msg={}", ex.kind(), ex.getMessage());
+        notice(NOTICE_MODEL_DOWN, "warn");
+        replyDone(replyId, inReplyTo, null);
+        pushStatus(true);
+    }
+
+    private void issueCommand(CommandName name, JsonObject args, String sourceMessageId) {
+        Envelope cmd = envelope(MessageType.COMMAND, Peer.MC, new Command(name, args == null ? new JsonObject() : args));
+        commandNames.put(cmd.id(), name);
+        if (sourceMessageId != null) {
+            commandSource.put(cmd.id(), sourceMessageId);
+        }
+        if (name == CommandName.STOP) {
+            stopCommands.put(cmd.id(), "model");
+            slot.onStopIssued(now());
+        } else {
+            slot.start(cmd.id(), name, now(), sourceMessageId);
+        }
+        mc.send(cmd);
+        memory.saveEvent("command", cmd.id(), sourceMessageId, obj("name", name.wire()));
+        log.info("command name={} cmd_id={}", name.wire(), cmd.id());
+    }
+
+    private void onStopButton() {
+        log.info("stop_button");
+        memory.saveEvent("stop_button", null, null, null);
+        if (mc == null) {
+            notice("伙伴不在线，没什么可停的", "info");
+            return;
+        }
+        Envelope cmd = envelope(MessageType.COMMAND, Peer.MC, Command.of(CommandName.STOP));
+        commandNames.put(cmd.id(), CommandName.STOP);
+        stopCommands.put(cmd.id(), "button");
+        slot.onStopIssued(now());
+        mc.send(cmd);
+        memory.saveEvent("command", cmd.id(), null, obj("name", "stop"));
+        log.info("command name=stop cmd_id={} source=button", cmd.id());
+        pushStatus(true);
+    }
+
+    /** 结果到了，让 Brain 说一句话；模型挂了就用固定描述兜底。 */
+    private void say(CommandName name, Result r) {
+        String source = commandSource.remove(r.commandId());
+        String replyId = UUID.randomUUID().toString();
+        BrainContext ctx = context();
+        brainExec.execute(() -> {
+            String text;
+            try {
+                ModelReply reply = brain.sayAfterResult(name, r, ctx, chunk -> submit(() -> replyChunk(replyId, source, chunk)));
+                text = reply.text().strip();
+                submit(() -> modelOk = true);
+            } catch (ModelException ex) {
+                text = Brain.describeResult(name, r);
+                String fallback = text;
+                submit(() -> {
+                    modelOk = false;
+                    log.warn("model_fail kind={} msg={} (say_after_result)", ex.kind(), ex.getMessage());
+                    replyChunk(replyId, source, fallback);
+                });
+            }
+            String finalText = text;
+            submit(() -> {
+                StoredMessage saved = memory.saveMessage("companion", finalText, source, null);
+                replyDone(replyId, source, saved.id());
+                log.info("chat_out len={} after_result={} msg_id={}", finalText.length(), name.wire(), saved.id());
+                pushStatus(true);
+            });
+        });
+    }
+
+    // ---------------- /ws/keeper ----------------
+
+    public void keeperConnected(Sender s) {
+        if (keeper != null && keeper != s) {
+            keeper.close(4409, "replaced");
+        }
+        keeper = s;
+        s.send(envelope(MessageType.HELLO, Peer.KEEPER,
+                new HelloOk(true, now(), ProtocolCodec.VERSION, keeperDesired, null, null, null)));
+        log.info("keeper online desired={}", keeperDesired);
+        pushStatus(true);
+    }
+
+    public void keeperDisconnected(Sender s) {
+        if (keeper != s) {
+            return;
+        }
+        keeper = null;
+        keeperStatus = null;
+        log.info("keeper offline");
+        pushStatus(true);
+    }
+
+    public void keeperMessage(Envelope e) {
+        if (e.type() == MessageType.KEEPER_STATUS) {
+            KeeperStatus st = ProtocolCodec.bodyAs(e, KeeperStatus.class);
+            boolean changed = keeperStatus == null || keeperStatus.running() != st.running()
+                    || keeperStatus.gaveUp() != st.gaveUp();
+            keeperStatus = st;
+            pushStatus(changed);
+        }
+    }
+
+    private void keeperControl(String action) {
+        if (!"start".equals(action) && !"stop".equals(action)) {
+            return;
+        }
+        keeperDesired = "start".equals(action) ? "running" : "stopped";
+        memory.setSetting("keeper_desired", keeperDesired);
+        log.info("keeper_control action={}", action);
+        if (keeper == null) {
+            notice("keeper 没连上，它上线后会按这个状态执行", "warn");
+        } else {
+            keeper.send(envelope(MessageType.KEEPER_CMD, Peer.KEEPER, new KeeperCmd(action)));
+        }
+        pushStatus(true);
+    }
+
+    // ---------------- 状态、提示、推送 ----------------
+
+    public void tick() {
+        long now = now();
+        for (TaskSlot.Synth s : slot.check(now)) {
+            handleSynth(s);
+        }
+        if (now - lastStatusPush >= STATUS_INTERVAL_MS) {
+            pushStatus(true);
+        }
+    }
+
+    public boolean companionInWorld() {
+        return mcOnline && lastSnapshot != null && lastSnapshot.inWorld();
+    }
+
+    public boolean executorOnline() {
+        return mcOnline;
+    }
+
+    public Optional<TaskSlot.Task> currentTask() {
+        return slot.current();
+    }
+
+    Status status() {
+        Status.CompanionState companion;
+        if (!mcOnline) {
+            companion = Status.CompanionState.offline();
+        } else if (lastSnapshot == null) {
+            companion = new Status.CompanionState(true, null, null, null, null, null);
+        } else {
+            companion = new Status.CompanionState(true, lastSnapshot.inWorld(), lastSnapshot.health(),
+                    lastSnapshot.food(), lastSnapshot.dim(), lastSnapshot.pos());
+        }
+        TaskInfo task = slot.current()
+                .map(t -> new TaskInfo(t.commandId(), t.name(), t.state().name().toLowerCase()))
+                .orElse(null);
+        Status.KeeperState ks = keeper == null ? Status.KeeperState.disconnected()
+                : new Status.KeeperState(true, keeperStatus == null ? null : keeperStatus.running(), keeperDesired,
+                        keeperStatus == null ? null : keeperStatus.gaveUp());
+        return new Status(companion, task, ks, new Status.ModelState(modelOk));
+    }
+
+    private void pushStatus(boolean force) {
+        long now = now();
+        if (!force && now - lastStatusPush < STATUS_INTERVAL_MS) {
+            return;
+        }
+        lastStatusPush = now;
+        broadcast(envelope(MessageType.STATUS, Peer.UI, status()));
+    }
+
+    private void pushPreferences(Sender only) {
+        List<Preference> pending = memory.preferences("pending");
+        List<Preferences.Item> items = pending.stream().map(p -> new Preferences.Item(p.id(), p.text(), p.ts())).toList();
+        Envelope e = envelope(MessageType.PREFERENCES, Peer.UI, new Preferences(items));
+        if (only != null) {
+            only.send(e);
+        } else {
+            broadcast(e);
+        }
+    }
+
+    private void notice(String text, String level) {
+        broadcast(envelope(MessageType.NOTICE, Peer.UI, new Notice(text, level)));
+    }
+
+    private void replyChunk(String replyId, String inReplyTo, String chunk) {
+        if (chunk == null || chunk.isEmpty()) {
+            return;
+        }
+        broadcast(envelope(MessageType.REPLY, Peer.UI, new Reply(replyId, inReplyTo, chunk, false, null)));
+    }
+
+    private void replyDone(String replyId, String inReplyTo, String messageId) {
+        broadcast(envelope(MessageType.REPLY, Peer.UI, new Reply(replyId, inReplyTo, "", true, messageId)));
+    }
+
+    private void broadcast(Envelope e) {
+        for (Sender s : List.copyOf(uis)) {
+            try {
+                s.send(e);
+            } catch (RuntimeException ex) {
+                log.debug("ui send failed, dropping: {}", ex.toString());
+                uis.remove(s);
+            }
+        }
+    }
+
+    private JsonArray historyJson() {
+        JsonArray a = new JsonArray();
+        for (StoredMessage m : memory.recentMessages(cfg.historyN)) {
+            JsonObject o = new JsonObject();
+            o.addProperty("id", m.id());
+            o.addProperty("ts", m.ts());
+            o.addProperty("role", m.role());
+            o.addProperty("text", m.text());
+            a.add(o);
+        }
+        return a;
+    }
+
+    private BrainContext context() {
+        List<String> prefs = memory.preferences("active").stream().map(Preference::text).toList();
+        return new BrainContext(lastSnapshot, mcOnline, prefs, memory.recentEpisodes(3),
+                memory.recentMessages(cfg.historyN));
+    }
+
+    // ---------------- 日记与备份 ----------------
+
+    public void writeDailyEpisode() {
+        writeEpisodeFor(LocalDate.now());
+    }
+
+    private void maybeWriteEpisodeOnOffline() {
+        LocalDate today = LocalDate.now();
+        if (memory.episodeForDay(today.toString()).isEmpty()) {
+            writeEpisodeFor(today);
+        }
+    }
+
+    private void writeEpisodeFor(LocalDate day) {
+        long from = day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        long to = day.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        List<StoredEvent> events = memory.eventsBetween(from, to, Set.of("progress", "model_call", "ack"));
+        List<StoredMessage> msgs = memory.messagesBetween(from, to);
+        if (events.isEmpty() && msgs.isEmpty()) {
+            log.info("episode skip day={} (nothing happened)", day);
+            return;
+        }
+        String dayStr = day.toString();
+        brainExec.execute(() -> {
+            try {
+                String summary = brain.writeEpisode(dayStr, events, msgs);
+                if (!summary.isBlank()) {
+                    submit(() -> memory.saveEpisode(dayStr, summary, from, to));
+                }
+            } catch (ModelException e) {
+                log.warn("episode_fail day={} kind={} msg={}", dayStr, e.kind(), e.getMessage());
+            }
+        });
+    }
+
+    public void backup(Path dir, int keep) {
+        try {
+            memory.backup(dir, keep);
+        } catch (RuntimeException e) {
+            log.warn("backup_fail: {}", e.getMessage());
+        }
+    }
+
+    // ---------------- 小工具 ----------------
+
+    private static Envelope envelope(MessageType type, Peer to, Object body) {
+        return ProtocolCodec.envelope(type, Peer.HUB, to, body);
+    }
+
+    private static JsonObject obj(String key, Object value) {
+        JsonObject o = new JsonObject();
+        if (value instanceof Number n) {
+            o.addProperty(key, n);
+        } else if (value != null) {
+            o.addProperty(key, String.valueOf(value));
+        }
+        return o;
+    }
+
+    private static long now() {
+        return System.currentTimeMillis();
+    }
+}
