@@ -27,3 +27,4 @@ out/
 
 # 人设是你自己的文件，仓库里只放 persona.example.md
 persona.md
+__pycache__/

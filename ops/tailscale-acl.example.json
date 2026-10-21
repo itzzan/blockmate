@@ -13,8 +13,8 @@
     {"src": ["you@example.com"], "dst": ["tag:mcserver"],    "ip": ["tcp:22", "tcp:443", "tcp:8787", "tcp:25575", "tcp:5900"]},
     // 3. 只有你本人能远程操作 MacBook
     {"src": ["you@example.com"], "dst": ["tag:workstation"], "ip": ["tcp:22", "tcp:5900"]},
-    // 4. MacBook（模组和 keeper）能连后台的 8787
-    {"src": ["tag:workstation"], "dst": ["tag:mcserver"],    "ip": ["tcp:8787"]},
+    // 4. MacBook 能连 Mac mini 的 SSH（22）、聊天网页（443）和后台（8787）；MacBook 贴了标签后不再算"本人"，所以 22/443 要在这里放行
+    {"src": ["tag:workstation"], "dst": ["tag:mcserver"],    "ip": ["tcp:22", "tcp:443", "tcp:8787"]},
     // 5. Mac mini（后台）能连 MacBook 的 11434：调大模型
     {"src": ["tag:mcserver"],    "dst": ["tag:workstation"], "ip": ["tcp:11434"]}
   ]
