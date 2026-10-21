@@ -37,6 +37,13 @@ application {
     mainClass.set("dev.blockmate.server.Main")
 }
 
+// 网页（ui/）是纯静态文件，打包时整个拷进 jar 的 web/ 目录，由后台在 / 提供（手册 5.6）
+tasks.processResources {
+    from(rootProject.file("ui")) {
+        into("web")
+    }
+}
+
 // 产物：server/build/libs/server-all.jar（手册 5.7 拷到 Mac mini 时改名 server.jar）
 tasks.shadowJar {
     archiveBaseName.set("server")
