@@ -37,14 +37,16 @@ public final class Observer {
 
     private final Supplier<HubLink> link;
     private final Supplier<TaskInfo> taskSupplier;
+    private final Runnable onDisconnectScreen;
     private int ticks;
     private boolean wasDead;
     private Map<String, Integer> lastInventory = Inventories.empty();
     private String lastKickReason;
 
-    public Observer(Supplier<HubLink> link, Supplier<TaskInfo> taskSupplier) {
+    public Observer(Supplier<HubLink> link, Supplier<TaskInfo> taskSupplier, Runnable onDisconnectScreen) {
         this.link = link;
         this.taskSupplier = taskSupplier;
+        this.onDisconnectScreen = onDisconnectScreen;
     }
 
     // ---------- 每 tick ----------
@@ -141,6 +143,7 @@ public final class Observer {
                 lastKickReason = null;
             }
             CompanionMod.LOG.info(CompanionMod.TAG + "disconnected screen, reason len={}", lastKickReason == null ? 0 : lastKickReason.length());
+            onDisconnectScreen.run();
         }
     }
 

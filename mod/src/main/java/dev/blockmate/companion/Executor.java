@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import dev.blockmate.protocol.Ack;
 import dev.blockmate.protocol.Command;
 import dev.blockmate.protocol.CommandName;
+import dev.blockmate.protocol.DeliveryOutcome;
 import dev.blockmate.protocol.Envelope;
 import dev.blockmate.protocol.MessageType;
 import dev.blockmate.protocol.Pos;
@@ -18,15 +19,23 @@ import dev.blockmate.protocol.Result;
 import dev.blockmate.protocol.TaskInfo;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.entity.Entity;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.registries.ForgeRegistries;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * executor（手册 6.4，第一批：follow / come_here / wait_here / stop）。
+ * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin。
  * 单任务槽：新 command 到达先给旧任务回 result cancelled，再回新任务的 ack。全部在游戏线程上。
  */
 public final class Executor implements AbstractGameEventListener {
@@ -35,10 +44,18 @@ public final class Executor implements AbstractGameEventListener {
     private static final double PROGRESS_STEP = 8.0;      // 距离每变化 8 格发 progress
     private static final int STUCK_WINDOW_TICKS = 100;    // 5 秒没动算卡住
     private static final double STUCK_MIN_MOVE = 0.1;
-    private static final double ARRIVE_DISTANCE = 2.5;    // 到主人 2 格内（留点余量）
+    private static final double ARRIVE_DISTANCE = 2.5;    // come_here：到主人 2 格内（留点余量）
+    private static final double DELIVER_DISTANCE = 3.0;   // deliver：到主人 3 格内
+    private static final double BACK_OFF_DISTANCE = 3.0;  // 丢完退开至少 3 格
     private static final int STOP_TICKS_PER_ATTEMPT = 20;
     private static final int STOP_MAX_ATTEMPTS = 3;
-    private static final int REPLAN_EVERY_TICKS = 40;     // 主人挪了就每 2 秒更新一次目标
+    private static final int REPLAN_EVERY_TICKS = 40;     // 目标挪了就每 2 秒更新一次
+    private static final int PICKUP_TIMEOUT_TICKS = 300;  // 15 秒没捡到
+    private static final int PICKUP_NONE_LEFT_TICKS = 40; // 半径内没东西了再等 2 秒就放弃
+    private static final int BACK_OFF_MAX_TICKS = 100;
+    private static final long CONFIRM_WINDOW_MS = 10_000; // 丢出后等确认 10 秒
+
+    private enum Phase { APPROACH, THROW, BACK_OFF, WAIT_CONFIRM }
 
     private static final class Task {
         final String id;
@@ -52,6 +69,20 @@ public final class Executor implements AbstractGameEventListener {
         BlockPos lastGoal;
         int lastReplanTick;
         boolean pathFailed;
+        // pick_up
+        String item;
+        int radius;
+        int startCount;
+        int noneLeftSince = -1;
+        // deliver
+        Phase phase = Phase.APPROACH;
+        String targetName;
+        int targetEntityId = -1;
+        int wanted;
+        ThrowPlan.Plan plan;
+        int clickIndex;
+        long thrownAtMs;
+        int phaseStartTick;
 
         Task(String id, CommandName name, JsonObject args, int startTick) {
             this.id = id;
@@ -63,13 +94,15 @@ public final class Executor implements AbstractGameEventListener {
 
     private final Supplier<HubLink> link;
     private final Runnable reportStatus;
+    private final Rejoiner rejoiner;
     private Task current;
     private int tick;
     private IBaritone listeningOn;
 
-    public Executor(Supplier<HubLink> link, Runnable reportStatus) {
+    public Executor(Supplier<HubLink> link, Runnable reportStatus, Rejoiner rejoiner) {
         this.link = link;
         this.reportStatus = reportStatus;
+        this.rejoiner = rejoiner;
     }
 
     public TaskInfo currentTaskInfo() {
@@ -126,11 +159,9 @@ public final class Executor implements AbstractGameEventListener {
             }
             case FOLLOW -> startFollow(env.id(), cmd.args(), mc);
             case COME_HERE -> startComeHere(env.id(), cmd.args(), mc);
-            default -> {
-                // pick_up / deliver / rejoin 是第二批
-                CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
-                send(MessageType.ACK, Ack.rejected(env.id()));
-            }
+            case PICK_UP -> startPickUp(env.id(), cmd.args(), mc);
+            case DELIVER -> startDeliver(env.id(), cmd.args(), mc);
+            case REJOIN -> startRejoin(env.id(), mc);
         }
     }
 
@@ -173,7 +204,89 @@ public final class Executor implements AbstractGameEventListener {
         }
         current = t;
         send(MessageType.ACK, Ack.accepted(id));
-        setGoal(b, t, goalPos(owner, t));
+        setGoal(b, t, goalPos(owner, t), 2);
+    }
+
+    private void startPickUp(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        Command.PickUpArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.PickUpArgs.class);
+        String item = normalizeItem(a == null ? null : a.item());
+        int radius = a == null ? 8 : a.radiusOrDefault();
+        send(MessageType.ACK, Ack.accepted(id));
+        LocalPlayer me = mc.player;
+        if (item == null) {
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND));
+            return;
+        }
+        if (findItems(mc, me, item, radius).isEmpty()) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "pick_up: no {} within {} blocks", item, radius);
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND));
+            return;
+        }
+        if (inventoryFull(me, item)) {
+            finish(Result.failed(id, Reason.INVENTORY_FULL));
+            return;
+        }
+        Task t = new Task(id, CommandName.PICK_UP, args, tick);
+        t.item = item;
+        t.radius = radius;
+        t.startCount = countItem(me, item);
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        current = t;
+        b.getFollowProcess().pickup(stack -> item.equals(idOf(stack)));
+        CompanionMod.LOG.info(CompanionMod.TAG + "pick_up started item={} radius={} have={}", item, radius, t.startCount);
+    }
+
+    private void startDeliver(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        Command.DeliverArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.DeliverArgs.class);
+        String item = normalizeItem(a == null ? null : a.item());
+        String targetName = a != null && a.to() != null && !a.to().isBlank() ? a.to() : ClientConfig.OWNER_NAME.get();
+        send(MessageType.ACK, Ack.accepted(id));
+        LocalPlayer me = mc.player;
+        Player target = findPlayer(mc, targetName);
+        if (target == null) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "deliver: {} not visible -> target_lost", targetName);
+            finish(Result.failed(id, Reason.TARGET_LOST, new Result.DeliverDetail(DeliveryOutcome.NOT_THROWN, 0)));
+            return;
+        }
+        int have = item == null ? 0 : countItem(me, item);
+        if (have == 0) {
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND, new Result.DeliverDetail(DeliveryOutcome.NOT_THROWN, 0)));
+            return;
+        }
+        Task t = new Task(id, CommandName.DELIVER, args, tick);
+        t.item = item;
+        t.targetName = targetName;
+        t.wanted = a.count() > 0 ? Math.min(a.count(), have) : have;
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        t.phase = Phase.APPROACH;
+        t.phaseStartTick = tick;
+        current = t;
+        setGoal(b, t, target.blockPosition(), 2);
+        CompanionMod.LOG.info(CompanionMod.TAG + "deliver started item={} count={} to={}", item, t.wanted, targetName);
+    }
+
+    private void startRejoin(String id, Minecraft mc) {
+        if (!rejoiner.enabled()) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "rejoin: no server address -> rejected");
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        cancelCurrent();
+        send(MessageType.ACK, Ack.accepted(id));
+        int attempt = rejoiner.forceRejoin(mc);
+        send(MessageType.RESULT, Result.ok(id, new Result.RejoinDetail(attempt)));
     }
 
     private void startStop(String id) {
@@ -230,6 +343,8 @@ public final class Executor implements AbstractGameEventListener {
             case FOLLOW -> tickFollow(mc, me);
             case COME_HERE -> tickComeHere(mc, me);
             case STOP -> tickStop(mc, me);
+            case PICK_UP -> tickPickUp(mc, me);
+            case DELIVER -> tickDeliver(mc, me);
             default -> {
             }
         }
@@ -283,12 +398,11 @@ public final class Executor implements AbstractGameEventListener {
             finish(Result.failed(t.id, Reason.STUCK));
             return;
         }
-        // 主人挪远了就更新目标；Baritone 自己停了（没到、没失败）也重新下目标
         if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS) {
             BlockPos goal = goalPos(owner, t);
             boolean idle = !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive();
             if (idle || t.lastGoal == null || goal.distSqr(t.lastGoal) > 9) {
-                setGoal(b, t, goal);
+                setGoal(b, t, goal, 2);
             }
         }
     }
@@ -313,10 +427,137 @@ public final class Executor implements AbstractGameEventListener {
         }
     }
 
+    private void tickPickUp(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        int now = countItem(me, t.item);
+        if (now > t.startCount) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.ok(t.id, new Result.PickUpDetail(now - t.startCount)));
+            return;
+        }
+        if (tick - t.startTick >= PICKUP_TIMEOUT_TICKS) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.NOT_PICKED));
+            return;
+        }
+        if (inventoryFull(me, t.item)) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.INVENTORY_FULL));
+            return;
+        }
+        if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.STUCK));
+            return;
+        }
+        // 半径内已经没有那种东西（被别人捡了、烧了）：再等 2 秒就放弃，不干等 15 秒
+        if (findItems(mc, me, t.item, t.radius * 2).isEmpty()) {
+            if (t.noneLeftSince < 0) {
+                t.noneLeftSince = tick;
+            } else if (tick - t.noneLeftSince >= PICKUP_NONE_LEFT_TICKS) {
+                BaritoneBridge.cancelEverything();
+                finish(Result.failed(t.id, Reason.NOT_PICKED));
+                return;
+            }
+        } else {
+            t.noneLeftSince = -1;
+        }
+    }
+
+    private void tickDeliver(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        IBaritone b = BaritoneBridge.baritone();
+        Player target = findPlayer(mc, t.targetName);
+        switch (t.phase) {
+            case APPROACH -> {
+                if (target == null) {
+                    BaritoneBridge.cancelEverything();
+                    finish(Result.failed(t.id, Reason.TARGET_LOST, new Result.DeliverDetail(DeliveryOutcome.NOT_THROWN, 0)));
+                    return;
+                }
+                double dist = me.distanceTo(target);
+                if (dist <= DELIVER_DISTANCE) {
+                    BaritoneBridge.cancelEverything();
+                    me.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
+                    t.plan = ThrowPlan.plan(stacksOf(me, t.item), t.wanted);
+                    t.clickIndex = 0;
+                    t.targetEntityId = target.getId();
+                    t.phase = Phase.THROW;
+                    t.phaseStartTick = tick;
+                    CompanionMod.LOG.info(CompanionMod.TAG + "deliver: arrived ({} blocks), throwing {} in {} clicks", round(dist), t.plan.total(), t.plan.clicks().size());
+                    return;
+                }
+                if (t.pathFailed) {
+                    BaritoneBridge.cancelEverything();
+                    finish(Result.failed(t.id, Reason.PATH_FAILED, new Result.DeliverDetail(DeliveryOutcome.NOT_THROWN, 0)));
+                    return;
+                }
+                if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
+                    BaritoneBridge.cancelEverything();
+                    finish(Result.failed(t.id, Reason.STUCK, new Result.DeliverDetail(DeliveryOutcome.NOT_THROWN, 0)));
+                    return;
+                }
+                if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS) {
+                    BlockPos goal = target.blockPosition();
+                    boolean idle = !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive();
+                    if (idle || t.lastGoal == null || goal.distSqr(t.lastGoal) > 9) {
+                        setGoal(b, t, goal, 2);
+                    }
+                }
+            }
+            case THROW -> {
+                if (t.clickIndex < t.plan.clicks().size()) {
+                    ThrowPlan.Click c = t.plan.clicks().get(t.clickIndex++);
+                    if (mc.gameMode != null) {
+                        // 必须走会发包给服务器的路径（手册 6.4 第 6 条），不能用只在本地画假物品的 Player.drop
+                        mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId, c.slot(), c.button(), ClickType.THROW, me);
+                    }
+                    return;
+                }
+                t.thrownAtMs = System.currentTimeMillis();
+                t.phase = Phase.BACK_OFF;
+                t.phaseStartTick = tick;
+                Vec3 away = target == null ? new Vec3(1, 0, 0) : me.position().subtract(target.position());
+                away = new Vec3(away.x, 0, away.z);
+                if (away.lengthSqr() < 0.01) {
+                    away = new Vec3(1, 0, 0);
+                }
+                Vec3 p = me.position().add(away.normalize().scale(4));
+                if (b != null) {
+                    setGoal(b, t, BlockPos.containing(p.x, p.y, p.z), 1);
+                }
+                CompanionMod.LOG.info(CompanionMod.TAG + "deliver: thrown {}, backing off", t.plan.total());
+            }
+            case BACK_OFF -> {
+                if (DeliveryWatch.confirmedSince(t.targetEntityId, t.item, t.thrownAtMs)) {
+                    BaritoneBridge.cancelEverything();
+                    finish(Result.ok(t.id, new Result.DeliverDetail(DeliveryOutcome.CONFIRMED, t.plan.total())));
+                    return;
+                }
+                boolean farEnough = target == null || me.distanceTo(target) >= BACK_OFF_DISTANCE;
+                if (farEnough || tick - t.phaseStartTick >= BACK_OFF_MAX_TICKS) {
+                    BaritoneBridge.cancelEverything();
+                    t.phase = Phase.WAIT_CONFIRM;
+                    t.phaseStartTick = tick;
+                }
+            }
+            case WAIT_CONFIRM -> {
+                if (DeliveryWatch.confirmedSince(t.targetEntityId, t.item, t.thrownAtMs)) {
+                    finish(Result.ok(t.id, new Result.DeliverDetail(DeliveryOutcome.CONFIRMED, t.plan.total())));
+                    return;
+                }
+                if (System.currentTimeMillis() - t.thrownAtMs >= CONFIRM_WINDOW_MS) {
+                    // 结果未知：绝不自动再丢一次（手册 6.4 第 6 条）
+                    finish(Result.ok(t.id, new Result.DeliverDetail(DeliveryOutcome.THROWN_UNCONFIRMED, t.plan.total())));
+                }
+            }
+        }
+    }
+
     // ---------------- 小工具 ----------------
 
-    private void setGoal(IBaritone b, Task t, BlockPos goal) {
-        b.getCustomGoalProcess().setGoalAndPath(new GoalNear(goal, 2));
+    private void setGoal(IBaritone b, Task t, BlockPos goal, int range) {
+        b.getCustomGoalProcess().setGoalAndPath(new GoalNear(goal, range));
         t.lastGoal = goal;
         t.lastReplanTick = tick;
         t.pathFailed = false;
@@ -330,13 +571,84 @@ public final class Executor implements AbstractGameEventListener {
     }
 
     static Player findOwner(Minecraft mc) {
-        String owner = ClientConfig.OWNER_NAME.get();
+        return findPlayer(mc, ClientConfig.OWNER_NAME.get());
+    }
+
+    static Player findPlayer(Minecraft mc, String name) {
+        if (mc.level == null || name == null) {
+            return null;
+        }
         for (Player p : mc.level.players()) {
-            if (p != mc.player && owner.equals(p.getGameProfile().getName())) {
+            if (p != mc.player && name.equals(p.getGameProfile().getName())) {
                 return p;
             }
         }
         return null;
+    }
+
+    /** 物品 id 规范化：没写命名空间就补 minecraft:；不存在的物品返回 null。 */
+    static String normalizeItem(String item) {
+        if (item == null || item.isBlank()) {
+            return null;
+        }
+        String id = item.strip().toLowerCase();
+        if (!id.contains(":")) {
+            id = "minecraft:" + id;
+        }
+        ResourceLocation rl = ResourceLocation.tryParse(id);
+        if (rl == null || !ForgeRegistries.ITEMS.containsKey(rl)) {
+            return null;
+        }
+        return id;
+    }
+
+    static String idOf(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return null;
+        }
+        ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
+        return key == null ? null : key.toString();
+    }
+
+    static int countItem(LocalPlayer me, String item) {
+        int n = 0;
+        for (ItemStack s : me.getInventory().items) {
+            if (item.equals(idOf(s))) {
+                n += s.getCount();
+            }
+        }
+        for (ItemStack s : me.getInventory().offhand) {
+            if (item.equals(idOf(s))) {
+                n += s.getCount();
+            }
+        }
+        return n;
+    }
+
+    /** 主背包里该物品的每一组（格子序号, 数量），快捷栏优先。 */
+    static List<ThrowPlan.Stack> stacksOf(LocalPlayer me, String item) {
+        List<ThrowPlan.Stack> out = new ArrayList<>();
+        var items = me.getInventory().items;
+        for (int i = 0; i < items.size(); i++) {
+            ItemStack s = items.get(i);
+            if (item.equals(idOf(s))) {
+                out.add(new ThrowPlan.Stack(i, s.getCount()));
+            }
+        }
+        return out;
+    }
+
+    static boolean inventoryFull(LocalPlayer me, String item) {
+        if (me.getInventory().getFreeSlot() != -1) {
+            return false;
+        }
+        Item it = ForgeRegistries.ITEMS.getValue(ResourceLocation.tryParse(item));
+        return it == null || me.getInventory().getSlotWithRemainingSpace(new ItemStack(it)) == -1;
+    }
+
+    static List<ItemEntity> findItems(Minecraft mc, LocalPlayer me, String item, int radius) {
+        return mc.level.getEntitiesOfClass(ItemEntity.class, me.getBoundingBox().inflate(radius),
+                e -> item.equals(idOf(e.getItem())));
     }
 
     private void finish(Result r) {

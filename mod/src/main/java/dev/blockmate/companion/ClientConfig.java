@@ -11,6 +11,7 @@ public final class ClientConfig {
     public static final ForgeConfigSpec.ConfigValue<String> OWNER_NAME;
     public static final ForgeConfigSpec.ConfigValue<String> PLAYER_NAME;
     public static final ForgeConfigSpec.IntValue RECONNECT_MAX_S;
+    public static final ForgeConfigSpec.ConfigValue<String> SERVER_ADDRESS;
 
     static {
         ForgeConfigSpec.Builder b = new ForgeConfigSpec.Builder();
@@ -25,6 +26,10 @@ public final class ClientConfig {
         b.pop();
         RECONNECT_MAX_S = b.comment("断线重连的退避上限（秒），从 2 秒起翻倍到这个值")
                 .defineInRange("reconnect_max_s", 30, 2, 600);
+        b.comment("游戏服务器").push("server");
+        SERVER_ADDRESS = b.comment("被踢或掉线后自动重连的服务器地址，例如 mini:25565；留空就不自动重连（单人世界用不到）")
+                .define("address", "");
+        b.pop();
         SPEC = b.build();
     }
 

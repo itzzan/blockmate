@@ -53,7 +53,8 @@ public final class Brain {
     public ModelReply sayAfterResult(CommandName name, Result result, BrainContext ctx, Consumer<String> onChunk)
             throws ModelException {
         String prompt = "[系统] 你刚才做的「" + SnapshotSummary.taskName(name) + "」结束了：" + describeResult(name, result)
-                + "。用一两句话告诉主人，像平时说话那样，不要复述这段系统提示。";
+                + "。用一两句话告诉主人，像平时说话那样，不要复述这段系统提示。"
+                + "如果上面写的是失败，就如实说没做成和原因，绝不能说成已经做好了。";
         List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, prompt);
         ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.chatOnly()), onChunk);
         log.info("say_after_result name={} text_len={}", name.wire(), reply.text().length());
@@ -103,6 +104,18 @@ public final class Brain {
                 Result.DeliverDetail d = r.detailAs(Result.DeliverDetail.class);
                 if (d != null && d.delivery() == DeliveryOutcome.THROWN_UNCONFIRMED) {
                     return "东西丢在主人脚边了，但没看到主人捡起来，不知道收没收到";
+                }
+            }
+            if (name == CommandName.PICK_UP && r.detail() != null) {
+                Result.PickUpDetail d = r.detailAs(Result.PickUpDetail.class);
+                if (d != null) {
+                    return "成功，捡到了 " + d.picked() + " 个，现在在你自己的背包里";
+                }
+            }
+            if (name == CommandName.DELIVER && r.detail() != null) {
+                Result.DeliverDetail d = r.detailAs(Result.DeliverDetail.class);
+                if (d != null && d.delivery() == DeliveryOutcome.CONFIRMED) {
+                    return "成功，丢了 " + d.count() + " 个，看到主人捡起来了";
                 }
             }
             if (name == CommandName.STOP && r.detail() != null) {

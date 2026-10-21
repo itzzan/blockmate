@@ -15,10 +15,11 @@ public final class ClientEvents {
     private HubLink link;
     private final Executor executor;
     private final Observer observer;
+    private final Rejoiner rejoiner = new Rejoiner();
 
     public ClientEvents() {
-        this.executor = new Executor(() -> link, this::reportStatus);
-        this.observer = new Observer(() -> link, executor::currentTaskInfo);
+        this.executor = new Executor(() -> link, this::reportStatus, rejoiner);
+        this.observer = new Observer(() -> link, executor::currentTaskInfo, rejoiner::onDisconnectedScreen);
         MinecraftForge.EVENT_BUS.register(observer);
     }
 
@@ -30,6 +31,7 @@ public final class ClientEvents {
     public void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
         BaritoneBridge.applySettings();
         executor.attachBaritone();
+        rejoiner.onJoined();
         if (link != null) {
             link.stop();
         }
@@ -54,6 +56,7 @@ public final class ClientEvents {
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
             executor.onTick(Minecraft.getInstance());
+            rejoiner.tick(Minecraft.getInstance());
         }
     }
 

@@ -86,7 +86,7 @@ class HubIntegrationTest {
                 onChunk.accept("我是 Blockmate。");
                 return new ModelReply("你好呀，我是 Blockmate。", List.of(), 1, 1, 1);
             }
-            String t = last.contains("身体没反应") ? "没反应啊，身体不听使唤。" : last.contains("失败") ? "没做成。" : "来了来了。";
+            String t = last.contains("身体没反应") ? "没反应啊，身体不听使唤。" : last.contains("结束了：失败") ? "没做成。" : "来了来了。";
             onChunk.accept(t);
             return new ModelReply(t, List.of(), 1, 1, 1);
         }
