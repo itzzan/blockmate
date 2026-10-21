@@ -38,7 +38,9 @@ public final class OllamaOpenAiClient implements ModelClient {
     private final Duration total;
 
     public OllamaOpenAiClient(URI baseUrl, Duration firstToken, Duration total) {
-        this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        // 固定 HTTP/1.1：Ollama 不支持 h2c 升级，省掉每次连接的 Upgrade 协商，也少一个排错变量
+        this.http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(5)).build();
         this.endpoint = baseUrl.resolve("/v1/chat/completions");
         this.firstToken = firstToken;
         this.total = total;
@@ -70,7 +72,8 @@ public final class OllamaOpenAiClient implements ModelClient {
             throw new ModelException(ModelException.Kind.CONNECT, "被中断", e);
         }
         if (resp.statusCode() != 200) {
-            throw new ModelException(ModelException.Kind.BAD_RESPONSE, "模型返回 HTTP " + resp.statusCode());
+            throw new ModelException(ModelException.Kind.BAD_RESPONSE,
+                    "模型返回 HTTP " + resp.statusCode() + " " + OllamaNativeClient.headerSummary(resp));
         }
         return readStream(resp.body(), start, onChunk);
     }

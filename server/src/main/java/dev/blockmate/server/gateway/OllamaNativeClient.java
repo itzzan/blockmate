@@ -37,7 +37,9 @@ public final class OllamaNativeClient implements ModelClient {
     private final Duration total;
 
     public OllamaNativeClient(URI baseUrl, Duration firstToken, Duration total) {
-        this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        // 固定 HTTP/1.1：Ollama 不支持 h2c 升级，省掉每次连接的 Upgrade 协商，也少一个排错变量
+        this.http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(5)).build();
         this.endpoint = baseUrl.resolve("/api/chat");
         this.firstToken = firstToken;
         this.total = total;
@@ -70,7 +72,8 @@ public final class OllamaNativeClient implements ModelClient {
         }
         if (resp.statusCode() != 200) {
             String err = readAll(resp.body());
-            throw new ModelException(ModelException.Kind.BAD_RESPONSE, "模型返回 HTTP " + resp.statusCode() + ": " + trim(err));
+            throw new ModelException(ModelException.Kind.BAD_RESPONSE,
+                    "模型返回 HTTP " + resp.statusCode() + " " + headerSummary(resp) + ": " + trim(err));
         }
         return readStream(resp.body(), start, onChunk);
     }
@@ -179,6 +182,15 @@ public final class OllamaNativeClient implements ModelClient {
             body.add("tools", request.tools());
         }
         return body;
+    }
+
+    /** 非 200 时把能说明"是谁回的"的响应头带进日志（server / via / content-type），排查中间层问题用。 */
+    static String headerSummary(HttpResponse<?> resp) {
+        StringBuilder sb = new StringBuilder("[");
+        for (String h : new String[] {"server", "via", "content-type", "content-length"}) {
+            resp.headers().firstValue(h).ifPresent(v -> sb.append(h).append('=').append(v).append(' '));
+        }
+        return sb.toString().trim() + "]";
     }
 
     private static String readAll(InputStream in) {
