@@ -8,12 +8,18 @@ import dev.blockmate.protocol.MessageType;
 import dev.blockmate.protocol.ProtocolCodec;
 import net.minecraft.client.Minecraft;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 /** 进入世界连后台，离开世界断开；收到的消息搬到游戏线程处理。 */
 public final class ClientEvents {
 
     private HubLink link;
+    private final Observer observer = new Observer(() -> link, () -> null);
+
+    public ClientEvents() {
+        MinecraftForge.EVENT_BUS.register(observer);
+    }
 
     @SubscribeEvent
     public void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
@@ -31,6 +37,7 @@ public final class ClientEvents {
     public void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         if (link != null) {
             CompanionMod.LOG.info(CompanionMod.TAG + "left world, closing hub link");
+            observer.onLeaving();
             link.stop();
             link = null;
         }
@@ -51,12 +58,13 @@ public final class ClientEvents {
                 HelloOk ok = ProtocolCodec.bodyAs(env, HelloOk.class);
                 if (ok.ok()) {
                     CompanionMod.LOG.info(CompanionMod.TAG + "hub hello ok");
+                    observer.announceJoined();
                 } else {
                     CompanionMod.LOG.error(CompanionMod.TAG + "hub rejected us: {}", ok.error());
                 }
             }
             case COMMAND -> {
-                // 任务单 5：还不会动，先告诉后台"现在做不了"，免得它等 3 秒
+                // 任务单 7 之前还不会动：先告诉后台"现在做不了"，免得它等 3 秒
                 Command c = ProtocolCodec.bodyAs(env, Command.class);
                 CompanionMod.LOG.info(CompanionMod.TAG + "command {} received, executor not implemented yet -> rejected",
                         c.name() == null ? "?" : c.name().wire());

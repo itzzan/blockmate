@@ -28,6 +28,8 @@ import dev.blockmate.protocol.TaskInfo;
 import dev.blockmate.server.Config;
 import dev.blockmate.server.brain.Brain;
 import dev.blockmate.server.brain.BrainContext;
+import dev.blockmate.server.brain.ItemNames;
+import dev.blockmate.server.brain.SnapshotSummary;
 import dev.blockmate.server.brain.Tools;
 import dev.blockmate.server.gateway.ModelException;
 import dev.blockmate.server.gateway.ModelReply;
@@ -74,6 +76,7 @@ public final class Hub {
     private final Config cfg;
     private final Memory memory;
     private final Brain brain;
+    private final ItemNames names;
     private final ScheduledExecutorService exec;
     private final ExecutorService brainExec;
     private final TaskSlot slot;
@@ -92,10 +95,12 @@ public final class Hub {
     /** command id → 触发它的那条 owner 消息 id（回复时作为 in_reply_to）。 */
     private final Map<String, String> commandSource = new HashMap<>();
 
-    public Hub(Config cfg, Memory memory, Brain brain, ScheduledExecutorService exec, ExecutorService brainExec) {
+    public Hub(Config cfg, Memory memory, Brain brain, ItemNames names, ScheduledExecutorService exec,
+               ExecutorService brainExec) {
         this.cfg = cfg;
         this.memory = memory;
         this.brain = brain;
+        this.names = names;
         this.exec = exec;
         this.brainExec = brainExec;
         this.slot = new TaskSlot(cfg.timeouts);
@@ -493,10 +498,11 @@ public final class Hub {
         if (!mcOnline) {
             companion = Status.CompanionState.offline();
         } else if (lastSnapshot == null) {
-            companion = new Status.CompanionState(true, null, null, null, null, null);
+            companion = new Status.CompanionState(true, null, null, null, null, null, null);
         } else {
+            String inv = lastSnapshot.inWorld() ? SnapshotSummary.inventory(lastSnapshot.inventory(), names) : null;
             companion = new Status.CompanionState(true, lastSnapshot.inWorld(), lastSnapshot.health(),
-                    lastSnapshot.food(), lastSnapshot.dim(), lastSnapshot.pos());
+                    lastSnapshot.food(), lastSnapshot.dim(), lastSnapshot.pos(), inv);
         }
         TaskInfo task = slot.current()
                 .map(t -> new TaskInfo(t.commandId(), t.name(), t.state().name().toLowerCase()))

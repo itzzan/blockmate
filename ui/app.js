@@ -7,7 +7,7 @@
 
   const $ = (id) => document.getElementById(id);
   const el = {
-    conn: $('conn'), online: $('online'), task: $('task'), health: $('health'), dim: $('dim'),
+    conn: $('conn'), online: $('online'), task: $('task'), health: $('health'), dim: $('dim'), inv: $('inv'),
     model: $('model'), keeper: $('keeper'), keeperStart: $('keeper-start'), keeperStop: $('keeper-stop'),
     stop: $('stop'), chat: $('chat'), prefs: $('prefs'), prefsList: $('prefs-list'), prefsCount: $('prefs-count'),
     composer: $('composer'), input: $('input'), send: $('send'),
@@ -96,6 +96,10 @@
     else pill(el.task, '无任务', '');
     pill(el.health, '♥ ' + (c.health == null ? '--' : Math.round(c.health) + '/20'), c.health != null && c.health <= 6 ? 'pill-bad' : '');
     pill(el.dim, c.dim ? (DIM_NAMES[c.dim] || c.dim) : '--', '');
+    if (c.inventory_summary) {
+      const inv = c.inventory_summary.length > 40 ? c.inventory_summary.slice(0, 40) + '…' : c.inventory_summary;
+      pill(el.inv, '背包：' + inv, ''); el.inv.hidden = false; el.inv.title = '背包：' + c.inventory_summary;
+    } else { el.inv.hidden = true; }
     const m = s.model || {};
     pill(el.model, m.ok ? '模型正常' : '模型无响应', m.ok ? 'pill-ok' : 'pill-bad');
     const k = s.keeper || {};

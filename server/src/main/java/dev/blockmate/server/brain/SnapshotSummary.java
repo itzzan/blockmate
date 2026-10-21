@@ -48,7 +48,7 @@ public final class SnapshotSummary {
         return sb.toString();
     }
 
-    static String inventory(Map<String, Integer> inv, ItemNames names) {
+    public static String inventory(Map<String, Integer> inv, ItemNames names) {
         if (inv == null || inv.isEmpty()) {
             return "空";
         }
