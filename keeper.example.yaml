@@ -1,0 +1,19 @@
+# keeper 的配置（手册 7.2，细则第 13 节）。拷成 keeper.yaml 填好；keeper.yaml 含 token，不进 git。
+hub_url: "ws://mini:8787/ws/keeper"       # 后台的 keeper 端点；本机开发用 ws://127.0.0.1:8787/ws/keeper
+token: "CHANGE_ME"                         # 和后台 config.yaml 一样的 token
+# 拉起游戏客户端的命令（手册 7.2 第 2 条）。caffeinate -ims = 这个程序跑着时 Mac 不要睡。
+launch_cmd:
+  - "caffeinate"
+  - "-ims"
+  - "/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher"
+  - "--launch"
+  - "companion-vanilla-1.20.1"
+  - "--profile"
+  - "Blockmate"
+  - "--server"
+  - "mini:25565"
+process_pattern: "companion-vanilla-1.20.1"  # pgrep -f 用它找游戏的 Java 进程
+check_interval_s: 10                          # 多久看一次进程、报一次状态
+max_restarts_per_10min: 3                     # 10 分钟内自动拉起的上限，超过就放弃并报告
+stop_grace_s: 15                              # 收到 stop 后先 SIGTERM，这么多秒没退就 SIGKILL
+startup_grace_s: 60                           # 拉起后给游戏多少秒启动时间，期间不重复拉起

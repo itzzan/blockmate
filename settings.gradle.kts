@@ -4,3 +4,4 @@ rootProject.name = "blockmate"
 include("protocol")
 include("mock-executor")
 include("server")
+include("keeper")
