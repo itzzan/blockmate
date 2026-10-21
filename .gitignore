@@ -3,6 +3,7 @@ data/
 logs/
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
+!mod/gradle/wrapper/gradle-wrapper.jar
 build/
 .gradle/
 config.yaml

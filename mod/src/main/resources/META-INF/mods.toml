@@ -1,0 +1,36 @@
+# Blockmate 控制模组（手册 6.2 第 1 条）。带美元号花括号的占位符由 build.gradle 的 processResources 从 gradle.properties 填入。
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+# 纯客户端：专用服务器上不加载；连原版服务器不显示红叉。
+# 手册写的是 IGNORE_SERVER_VERSION，但按 Forge 的说明那是"服务端专用模组"的值；
+# 客户端专用模组要用 IGNORE_ALL_VERSION（clientSideOnly=true 时 Forge 的默认值也是它）。
+clientSideOnly=true
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+displayTest="IGNORE_ALL_VERSION"
+description='''Blockmate 的控制模组：连后台、看周围、按命令动。纯客户端，连原版服务器。'''
+
+[[dependencies.${mod_id}]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="CLIENT"
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="CLIENT"
+# Baritone 的 modId 就叫 baritoe（它自己 mods.toml 里的写法），必须先于我们加载
+[[dependencies.${mod_id}]]
+    modId="baritoe"
+    mandatory=true
+    versionRange="[1.10,)"
+    ordering="AFTER"
+    side="CLIENT"

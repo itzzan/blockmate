@@ -2,6 +2,7 @@
 // 手册 5.3：这个模块要能被 Java 17 的模组引用，所以字节码目标是 17（用 JDK 21 编译，--release 17）。
 plugins {
     `java-library`
+    `maven-publish`
 }
 
 group = "dev.blockmate"
@@ -34,5 +35,15 @@ tasks.test {
     testLogging {
         events("passed", "failed", "skipped")
         showStandardStreams = false
+    }
+}
+
+// 模组工程（mod/，独立的 ForgeGradle 工程）通过本地 Maven 仓库引用这个模块：
+//   ./gradlew :protocol:publishToMavenLocal
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            from(components["java"])
+        }
     }
 }
