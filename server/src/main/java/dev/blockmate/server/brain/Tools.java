@@ -35,10 +35,10 @@ public final class Tools {
     /** 决策请求：全部工具。 */
     public static JsonArray all() {
         JsonArray a = new JsonArray();
-        a.add(fn("follow", "开始跟随玩家，一直跟到玩家让你停下", Map.of()));
-        a.add(fn("come_here", "走到玩家身边", Map.of()));
-        a.add(fn("wait_here", "停下，在原地等着", Map.of()));
-        a.add(fn("stop", "立刻停下正在做的事", Map.of()));
+        a.add(fn("follow", "开始跟随玩家，一直跟到玩家让你停下。玩家说\"跟我来\"\"跟着我\"\"走\"时用", Map.of()));
+        a.add(fn("come_here", "走到玩家身边。玩家说\"过来\"\"到我这来\"时用", Map.of()));
+        a.add(fn("wait_here", "停下，在原地等着。玩家说\"等在这\"\"别动\"\"待着\"\"在这等我\"时用，哪怕你现在没在做别的", Map.of()));
+        a.add(fn("stop", "立刻停下正在做的事。玩家说\"停\"\"别跟了\"\"停下\"时用", Map.of()));
         a.add(fn("pick_up", "捡起附近地上的某种物品", Map.of(
                 "item", prop("string", "物品的英文 id，例如 minecraft:oak_log"),
                 "radius", prop("integer", "搜索半径（格），可不填，默认 8"))));

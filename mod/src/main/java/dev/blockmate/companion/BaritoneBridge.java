@@ -3,11 +3,21 @@ package dev.blockmate.companion;
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import baritone.api.Settings;
+import baritone.api.event.listener.IGameEventListener;
 
 /** 和 Baritone 打交道的地方。只在游戏线程调用。 */
 public final class BaritoneBridge {
 
     private BaritoneBridge() {
+    }
+
+    /** 当前的 Baritone 实例；没有就 null。 */
+    public static IBaritone baritone() {
+        try {
+            return BaritoneAPI.getProvider().getPrimaryBaritone();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 进入世界时把设置写死（手册 6.2 第 5 条）。返回 Baritone 是否可用。 */
@@ -30,13 +40,23 @@ public final class BaritoneBridge {
         }
     }
 
-    /** 立刻停下一切（断线、stop 都用它）。 */
-    public static void cancelEverything() {
+    public static void registerListener(IGameEventListener listener) {
+        try {
+            BaritoneAPI.getProvider().getPrimaryBaritone().getGameEventHandler().registerEventListener(listener);
+        } catch (Throwable t) {
+            CompanionMod.LOG.warn(CompanionMod.TAG + "cannot register baritone listener: {}", t.toString());
+        }
+    }
+
+    /** 立刻停下一切（断线、stop 都用它）。返回 Baritone 的返回值。 */
+    public static boolean cancelEverything() {
         try {
             boolean r = BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();
             CompanionMod.LOG.info(CompanionMod.TAG + "cancelEverything -> {}", r);
+            return r;
         } catch (Throwable t) {
             CompanionMod.LOG.warn(CompanionMod.TAG + "cancelEverything failed: {}", t.toString());
+            return false;
         }
     }
 }

@@ -1,29 +1,35 @@
 package dev.blockmate.companion;
 
-import dev.blockmate.protocol.Ack;
-import dev.blockmate.protocol.Command;
 import dev.blockmate.protocol.Envelope;
 import dev.blockmate.protocol.HelloOk;
-import dev.blockmate.protocol.MessageType;
 import dev.blockmate.protocol.ProtocolCodec;
 import net.minecraft.client.Minecraft;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
-/** 进入世界连后台，离开世界断开；收到的消息搬到游戏线程处理。 */
+/** 进入世界连后台，离开世界断开；收到的消息搬到游戏线程处理；每 tick 推进 executor。 */
 public final class ClientEvents {
 
     private HubLink link;
-    private final Observer observer = new Observer(() -> link, () -> null);
+    private final Executor executor;
+    private final Observer observer;
 
     public ClientEvents() {
+        this.executor = new Executor(() -> link, this::reportStatus);
+        this.observer = new Observer(() -> link, executor::currentTaskInfo);
         MinecraftForge.EVENT_BUS.register(observer);
+    }
+
+    private void reportStatus() {
+        observer.announceJoined();
     }
 
     @SubscribeEvent
     public void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
         BaritoneBridge.applySettings();
+        executor.attachBaritone();
         if (link != null) {
             link.stop();
         }
@@ -35,11 +41,19 @@ public final class ClientEvents {
 
     @SubscribeEvent
     public void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
+        executor.reset();
         if (link != null) {
             CompanionMod.LOG.info(CompanionMod.TAG + "left world, closing hub link");
             observer.onLeaving();
             link.stop();
             link = null;
+        }
+    }
+
+    @SubscribeEvent
+    public void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase == TickEvent.Phase.END) {
+            executor.onTick(Minecraft.getInstance());
         }
     }
 
@@ -49,8 +63,7 @@ public final class ClientEvents {
     }
 
     private void handle(Envelope env) {
-        HubLink l = link;
-        if (l == null) {
+        if (link == null) {
             return;
         }
         switch (env.type()) {
@@ -63,18 +76,12 @@ public final class ClientEvents {
                     CompanionMod.LOG.error(CompanionMod.TAG + "hub rejected us: {}", ok.error());
                 }
             }
-            case COMMAND -> {
-                // 任务单 7 之前还不会动：先告诉后台"现在做不了"，免得它等 3 秒
-                Command c = ProtocolCodec.bodyAs(env, Command.class);
-                CompanionMod.LOG.info(CompanionMod.TAG + "command {} received, executor not implemented yet -> rejected",
-                        c.name() == null ? "?" : c.name().wire());
-                l.send(l.envelope(MessageType.ACK, Ack.rejected(env.id())));
-            }
+            case COMMAND -> executor.onCommand(env);
             default -> CompanionMod.LOG.debug(CompanionMod.TAG + "ignored {}", env.type().wire());
         }
     }
 
     private void onHubLost() {
-        Minecraft.getInstance().execute(BaritoneBridge::cancelEverything);
+        Minecraft.getInstance().execute(executor::onLinkLost);
     }
 }
