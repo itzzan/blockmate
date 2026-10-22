@@ -55,7 +55,7 @@ public final class Brain {
         String prompt = "[系统] 你刚才做的「" + SnapshotSummary.taskName(name) + "」结束了：" + describeResult(name, result)
                 + "。用一两句话告诉主人，像平时说话那样，不要复述这段系统提示。"
                 + "如果上面写的是失败，就如实说没做成和原因，绝不能说成已经做好了。";
-        List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, prompt);
+        List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, prompt, false);
         ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.chatOnly()), onChunk);
         log.info("say_after_result name={} text_len={}", name.wire(), reply.text().length());
         return reply;

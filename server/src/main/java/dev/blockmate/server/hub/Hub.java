@@ -94,6 +94,8 @@ public final class Hub {
     private Boolean ownerOnline;
     private final PresencePolicy presence;
     private int rconFailures;
+    /** 给模型看的历史：分块滑动窗口（history_n 到 2×history_n 条），让提示前缀稳定、Ollama 缓存命中。 */
+    private final HistoryWindow historyWindow;
     private boolean modelOk = true;
     private long lastStatusPush;
     /** stop 命令的 id → 来源（button / model）。 */
@@ -114,6 +116,7 @@ public final class Hub {
         this.autoAvailable = cfg.rcon != null;
         this.autoPresence = autoAvailable && "on".equals(memory.setting("keeper_auto").orElse("off"));
         this.presence = new PresencePolicy(cfg.autoPresence.offlineAfterMin() * 60_000L);
+        this.historyWindow = new HistoryWindow(cfg.historyN, cfg.historyN * 2);
     }
 
     public void submit(Runnable r) {
@@ -665,7 +668,7 @@ public final class Hub {
     private BrainContext context() {
         List<String> prefs = memory.preferences("active").stream().map(Preference::text).toList();
         return new BrainContext(lastSnapshot, mcOnline, prefs, memory.recentEpisodes(3),
-                memory.recentMessages(cfg.historyN));
+                historyWindow.select(memory.recentMessages(cfg.historyN * 2)));
     }
 
     // ---------------- 日记与备份 ----------------

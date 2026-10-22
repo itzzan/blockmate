@@ -251,7 +251,9 @@ class HubIntegrationTest {
         String greet = ui.reply(10_000);
         assertTrue(greet.contains("Blockmate"), greet);
         ChatRequest decision = model.requests.get(model.requests.size() - 1);
-        assertTrue(decision.messages().get(0).content().contains("你在主世界"), decision.messages().get(0).content());
+        String lastMsg = decision.messages().get(decision.messages().size() - 1).content();
+        assertTrue(lastMsg.contains("你在主世界"), "状态句在最后一条 user 里：" + lastMsg);
+        assertFalse(decision.messages().get(0).content().contains("你在主世界"), "system 里不再有状态句");
         assertEquals(8, decision.tools().size(), "决策请求带全部工具");
 
         // c. 跟我来：假执行器打印"收到 follow"，3 秒后结果到达，网页收到"来了"

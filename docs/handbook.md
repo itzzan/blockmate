@@ -265,7 +265,7 @@ idle ──command 发出──▶ pending ──ack accepted──▶ running �
 
 【细则】
 
-提示词顺序：system = persona.md 全文 + 「已确认的偏好」列表 + 「最近 3 条日记」（episodes）+ 「现在的状态」（snapshot 摘要）；然后是最近 N 条 messages（role 映射：owner→user，companion→assistant，owner_ingame→user 并加前缀"（游戏里说）"）；最后是这次的输入。
+提示词顺序（2026-10-22 调整，为了让 Ollama 的前缀缓存命中）：system = persona.md 全文 + 「已确认的偏好」列表 + 「最近 3 条日记」（episodes），**不含**每轮都变的状态句；然后是最近 N 条 messages（role 映射：owner→user，companion→assistant，owner_ingame→user 并加前缀"（游戏里说）"）；最后一条 user = 「现在的状态」（snapshot 摘要）+ 空行 + 「主人说：」+ 这次的输入（动作结束后的内部提示不加"主人说"）。调整前状态句在 system 里，每轮缓存只能复用到人设结尾，后面 1000 多 token 全部重算，首字 9 秒。
 
 snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，生命 20/20，饥饿 18/20，背包：橡木原木 8、面包 3。主人在 4 格外。当前任务：跟随中。」看不到主人时写「没看到主人」，不在世界里写「你现在不在游戏里」。物品 id 到中文名的映射放 `server/src/main/resources/items_zh.json`，没有映射的直接显示 id。
 
@@ -347,7 +347,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 写 episode 的时机：本地时间每天 23:55，或伙伴从在线变离线且当天还没写过；输入是当天的 events（去掉 progress 和 model_call）和 messages 的摘要，调一次模型，不带工具。同一天第二次触发就覆盖当天那条。
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
-- 最近 N 条对话：按 ts 倒序取 N 条未删除的 messages（N 来自 config.history_n，默认 20）。
+- 最近 N 条对话：按 ts 倒序取最近 2N 条未删除的 messages，再经 HistoryWindow 做分块滑动：窗口在 N 到 2N 条之间，满 2N 条时一次砍回 N 条，而不是每轮掉一条，这样提示前缀只在每 N 条消息变一次（N 来自 config.history_n，默认 20）。网页 hello 回复里带的 history 仍是最近 N 条。
 
 ## 12. config.yaml 与 persona.md
 

@@ -13,7 +13,11 @@ public final class PromptBuilder {
     private PromptBuilder() {
     }
 
-    public static String systemPrompt(String persona, BrainContext ctx, ItemNames names) {
+    /**
+     * system 部分只放一次对话里基本不变的东西（人设、偏好、日记），不放每轮都变的状态句，
+     * 这样 Ollama 的前缀缓存能一直命中（2026-10-22：状态句在 system 里时每轮重算 1000 多 token，首字 9 秒）。
+     */
+    public static String systemPrompt(String persona, BrainContext ctx) {
         StringBuilder sb = new StringBuilder(persona.strip()).append("\n\n");
         if (ctx.activePreferences() != null && !ctx.activePreferences().isEmpty()) {
             sb.append("已确认的偏好和约定：\n");
@@ -29,14 +33,27 @@ public final class PromptBuilder {
             }
             sb.append('\n');
         }
-        sb.append("现在的状态：").append(SnapshotSummary.describe(ctx.snapshot(), ctx.executorOnline(), names));
-        return sb.toString();
+        return sb.toString().strip();
     }
 
-    /** system + 最近对话 + 这次的输入。 */
+    /** 每轮都变的状态句，放在最后一条消息里。 */
+    public static String stateLine(BrainContext ctx, ItemNames names) {
+        return "现在的状态：" + SnapshotSummary.describe(ctx.snapshot(), ctx.executorOnline(), names);
+    }
+
+    /** system + 最近对话 + 这次的输入（来自主人的话）。 */
     public static List<ChatMessage> build(String persona, BrainContext ctx, ItemNames names, String userText) {
+        return build(persona, ctx, names, userText, true);
+    }
+
+    /**
+     * system + 最近对话 + 最后一条 user：状态句 + 这次的输入。
+     * fromOwner=true 时输入前面加"主人说："，让模型分清状态和主人的话；false 用于内部提示（动作结束后让它说一句）。
+     */
+    public static List<ChatMessage> build(String persona, BrainContext ctx, ItemNames names, String userText,
+                                          boolean fromOwner) {
         List<ChatMessage> out = new ArrayList<>();
-        out.add(ChatMessage.system(systemPrompt(persona, ctx, names)));
+        out.add(ChatMessage.system(systemPrompt(persona, ctx)));
         if (ctx.history() != null) {
             for (StoredMessage m : ctx.history()) {
                 if (m.text() == null || m.text().isBlank()) {
@@ -52,9 +69,11 @@ public final class PromptBuilder {
                 }
             }
         }
+        StringBuilder last = new StringBuilder(stateLine(ctx, names));
         if (userText != null) {
-            out.add(ChatMessage.user(userText));
+            last.append("\n\n").append(fromOwner ? "主人说：" : "").append(userText);
         }
+        out.add(ChatMessage.user(last.toString()));
         return out;
     }
 }

@@ -77,11 +77,18 @@ class BrainUnitTest {
         assertTrue(sys.startsWith("我是人设"));
         assertTrue(sys.contains("晚上十点以后不打游戏"));
         assertTrue(sys.contains("2026-10-19：昨天一起砍了树。"));
-        assertTrue(sys.contains("现在的状态：你在主世界"));
+        assertFalse(sys.contains("现在的状态"), "状态句不在 system 里，前缀才能命中缓存：" + sys);
         assertEquals(List.of("user", "assistant", "user", "user"), msgs.subList(1, 5).stream().map(ChatMessage::role).toList());
         assertEquals("（游戏里说）快来", msgs.get(3).content());
-        assertEquals("跟我来", msgs.get(4).content());
+        String last = msgs.get(4).content();
+        assertTrue(last.startsWith("现在的状态：你在主世界"), last);
+        assertTrue(last.endsWith("\n\n主人说：跟我来"), last);
         assertEquals(5, msgs.size(), "system 角色的历史不给模型看");
+
+        List<ChatMessage> internal = PromptBuilder.build("我是人设", ctx, NAMES, "[系统] 说一句", false);
+        String lastInternal = internal.get(internal.size() - 1).content();
+        assertTrue(lastInternal.startsWith("现在的状态："), lastInternal);
+        assertTrue(lastInternal.endsWith("\n\n[系统] 说一句"), "内部提示不加\"主人说\"：" + lastInternal);
     }
 
     @Test
