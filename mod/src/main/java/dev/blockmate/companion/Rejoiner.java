@@ -17,10 +17,15 @@ public final class Rejoiner {
         return addr != null && !addr.isBlank();
     }
 
-    /** 断线界面弹出时（Observer 调）。手动退出不会经过这里。 */
-    public void onDisconnectedScreen() {
+    /** 断线界面弹出时（Observer 调），reasonKey 是原因的翻译键（可能为 null）。手动退出不会经过这里。 */
+    public void onDisconnectedScreen(String reasonKey) {
         if (!enabled()) {
             CompanionMod.LOG.info(CompanionMod.TAG + "rejoin: no server address configured, staying out");
+            return;
+        }
+        if (RejoinPolicy.isPermanent(reasonKey)) {
+            policy.cancel();
+            CompanionMod.LOG.warn(CompanionMod.TAG + "rejoin: not retrying, server refused us ({})", reasonKey);
             return;
         }
         if (policy.onDisconnected(System.currentTimeMillis())) {

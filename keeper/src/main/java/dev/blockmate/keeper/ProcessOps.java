@@ -20,7 +20,7 @@ public final class ProcessOps {
         this.launchLog = launchLog;
     }
 
-    /** 用 pgrep -f 找游戏的 Java 进程：命令行里既有模式串又有 java 的那个（caffeinate / prismlauncher 的命令行也含模式串，要排除）。 */
+    /** 用 pgrep -f 找游戏的 Java 进程：命令行里有模式串、且本身就是 java 的那个（caffeinate / prismlauncher 的命令行也含模式串，要排除）。 */
     public Optional<Long> findGamePid(String pattern) {
         List<String> lines = run(List.of("pgrep", "-fl", pattern));
         for (String line : lines) {
@@ -29,7 +29,7 @@ public final class ProcessOps {
                 continue;
             }
             String cmd = parts[1];
-            if (cmd.contains("bin/java") || cmd.startsWith("java ")) {
+            if (looksLikeGame(cmd)) {
                 try {
                     return Optional.of(Long.parseLong(parts[0]));
                 } catch (NumberFormatException ignored) {
@@ -38,6 +38,19 @@ public final class ProcessOps {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * 命令行像不像游戏的 Java 进程：第一个词必须是 java 本身（java 或 …/bin/java）。
+     * 2026-10-22 之前只看"含 bin/java"，结果一个命令行里碰巧提到实例名和 bin/java 的 shell 脚本也被当成了游戏。
+     */
+    static boolean looksLikeGame(String cmd) {
+        // 可执行文件路径里可能有空格（Prism 自带的 Java 在 "Application Support" 下），所以不能按空格切；
+        // Java 的参数都以 "-" 开头，取第一个 " -" 之前的部分当作可执行文件。
+        String trimmed = cmd.trim();
+        int firstArg = trimmed.indexOf(" -");
+        String exe = firstArg > 0 ? trimmed.substring(0, firstArg) : trimmed;
+        return exe.equals("java") || exe.endsWith("/bin/java") || exe.endsWith("/bin/java.exe");
     }
 
     /** 执行启动命令。这条命令本身可能立刻退出（Prism 已开时会转发请求），所以不盯它。 */

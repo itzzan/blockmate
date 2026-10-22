@@ -4,6 +4,7 @@ import dev.blockmate.protocol.Envelope;
 import dev.blockmate.protocol.HelloOk;
 import dev.blockmate.protocol.ProtocolCodec;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
@@ -16,6 +17,7 @@ public final class ClientEvents {
     private final Executor executor;
     private final Observer observer;
     private final Rejoiner rejoiner = new Rejoiner();
+    private final AutoRespawn autoRespawn = new AutoRespawn(3_000);
 
     public ClientEvents() {
         this.executor = new Executor(() -> link, this::reportStatus, rejoiner);
@@ -44,19 +46,35 @@ public final class ClientEvents {
     @SubscribeEvent
     public void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         executor.reset();
-        if (link != null) {
+        HubLink current = link;
+        if (current == null) {
+            return;
+        }
+        // LoggingOut 在断线画面弹出之前触发，被踢的原因那时还拿不到；推到下一 tick 再发事件、关链接，
+        // 这样被踢会按 kicked（带服务器给的原因）而不是 disconnected 上报。
+        Minecraft.getInstance().tell(() -> { // tell 一定排到下一 tick；execute 在游戏线程上会立刻执行
+            if (link != current) {
+                return; // 期间已经重新进世界、换了新链接
+            }
             CompanionMod.LOG.info(CompanionMod.TAG + "left world, closing hub link");
             observer.onLeaving();
-            link.stop();
+            current.stop();
             link = null;
-        }
+        });
     }
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
-            executor.onTick(Minecraft.getInstance());
-            rejoiner.tick(Minecraft.getInstance());
+            Minecraft mc = Minecraft.getInstance();
+            executor.onTick(mc);
+            rejoiner.tick(mc);
+            if (autoRespawn.tick(mc.screen instanceof DeathScreen, System.currentTimeMillis()) && mc.player != null) {
+                // 和死亡画面上"重生"按钮做的事一样
+                CompanionMod.LOG.info(CompanionMod.TAG + "auto respawn");
+                mc.player.respawn();
+                mc.setScreen(null);
+            }
         }
     }
 

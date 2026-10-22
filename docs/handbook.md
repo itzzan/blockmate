@@ -159,6 +159,10 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | joined | — | 进入世界完成（重连 / 重生后，先发一条完整 snapshot，再发 joined） |
 | inventory_change | item, delta, count | 某物品数量变化；捡到为正，丢出为负 |
 
+【补丁 2026-10-22】模组侧两条行为：
+- 死亡画面停留 3 秒后模组自动"重生"（和按钮做的事一样），所以 death 之后会跟着 respawn + snapshot + joined；挂机被怪杀死不会一直停在死亡画面。画面一直不消失就每 3 秒再按一次。
+- 被踢 / 掉线后的自动重连（10 秒 × 5 次）对"服务器明确拒绝"的原因不生效：翻译键为 not_whitelisted、banned、banned.reason、banned_ip.reason、outdated_client、outdated_server、incompatible、unverified_username、name_taken、invalid_player_data 时直接放弃，日志写 `rejoin: not retrying`。被管理员 kick、服务器满、服务器重启仍会重连。
+
 ## 7. command / ack / progress / result
 
 ### 7.1 command

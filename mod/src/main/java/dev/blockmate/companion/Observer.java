@@ -12,6 +12,7 @@ import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
@@ -25,6 +26,7 @@ import net.minecraftforge.registries.ForgeRegistries;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -37,13 +39,13 @@ public final class Observer {
 
     private final Supplier<HubLink> link;
     private final Supplier<TaskInfo> taskSupplier;
-    private final Runnable onDisconnectScreen;
+    private final Consumer<String> onDisconnectScreen;
     private int ticks;
     private boolean wasDead;
     private Map<String, Integer> lastInventory = Inventories.empty();
     private String lastKickReason;
 
-    public Observer(Supplier<HubLink> link, Supplier<TaskInfo> taskSupplier, Runnable onDisconnectScreen) {
+    public Observer(Supplier<HubLink> link, Supplier<TaskInfo> taskSupplier, Consumer<String> onDisconnectScreen) {
         this.link = link;
         this.taskSupplier = taskSupplier;
         this.onDisconnectScreen = onDisconnectScreen;
@@ -132,18 +134,23 @@ public final class Observer {
         }
     }
 
-    /** 被踢 / 断线的界面弹出时记下原因，LoggingOut 时一起发出去。 */
+    /** 被踢 / 断线的界面弹出时记下原因，LoggingOut 时一起发出去；翻译键交给 Rejoiner 判断要不要重连。 */
     @SubscribeEvent
     public void onScreenOpening(ScreenEvent.Opening event) {
         if (event.getNewScreen() instanceof DisconnectedScreen screen) {
+            String key = null;
             try {
                 Component reason = ObfuscationReflectionHelper.getPrivateValue(DisconnectedScreen.class, screen, "f_95988_");
                 lastKickReason = reason == null ? null : reason.getString();
+                if (reason != null && reason.getContents() instanceof TranslatableContents tc) {
+                    key = tc.getKey();
+                }
             } catch (Throwable t) {
                 lastKickReason = null;
             }
-            CompanionMod.LOG.info(CompanionMod.TAG + "disconnected screen, reason len={}", lastKickReason == null ? 0 : lastKickReason.length());
-            onDisconnectScreen.run();
+            CompanionMod.LOG.info(CompanionMod.TAG + "disconnected screen, reason len={} key={}",
+                    lastKickReason == null ? 0 : lastKickReason.length(), key);
+            onDisconnectScreen.accept(key);
         }
     }
 
