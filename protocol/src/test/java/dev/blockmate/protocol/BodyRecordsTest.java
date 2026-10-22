@@ -69,6 +69,18 @@ class BodyRecordsTest {
     }
 
     @Test
+    void 状态里keeper一栏的字段名() {
+        Status.KeeperState k = new Status.KeeperState(true, false, "stopped", false, true, null);
+        String json = ProtocolCodec.gson().toJson(k);
+        assertTrue(json.contains("\"auto\":true"), json);
+        assertTrue(json.contains("\"gave_up\":false"), json);
+        assertFalse(json.contains("owner_online"), "null 字段不输出：" + json);
+        Status.KeeperState off = Status.KeeperState.disconnected(null, null);
+        assertFalse(off.connected());
+        assertNull(off.auto());
+    }
+
+    @Test
     void hello工厂方法() {
         assertEquals("mc", Hello.mc("t", "Blockmate", "Steve", "0.1.0").role());
         assertEquals(ProtocolCodec.VERSION, Hello.mc("t", "Blockmate", "Steve", "0.1.0").protocolV());

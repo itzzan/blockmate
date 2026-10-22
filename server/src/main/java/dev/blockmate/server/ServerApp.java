@@ -6,7 +6,9 @@ import dev.blockmate.server.brain.Persona;
 import dev.blockmate.server.gateway.ModelClient;
 import dev.blockmate.server.gateway.OllamaNativeClient;
 import dev.blockmate.server.gateway.OllamaOpenAiClient;
+import dev.blockmate.server.gateway.RconClient;
 import dev.blockmate.server.hub.Hub;
+import dev.blockmate.server.hub.PresencePoller;
 import dev.blockmate.server.hub.WsEndpoints;
 import dev.blockmate.server.memory.MaintenanceScheduler;
 import dev.blockmate.server.memory.Memory;
@@ -15,6 +17,7 @@ import io.javalin.http.staticfiles.Location;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.time.Duration;
@@ -74,6 +77,24 @@ public final class ServerApp {
         hubExec.scheduleAtFixedRate(hub::tick, 500, 500, TimeUnit.MILLISECONDS);
         MaintenanceScheduler.schedule(hubExec, cfg.episodeTime, hub::writeDailyEpisode, "episode");
         MaintenanceScheduler.schedule(hubExec, cfg.backupTime, () -> hub.backup(cfg.dataDir.resolve("backup"), 14), "backup");
+        if (cfg.rcon != null) {
+            // 自动上下线（手册 7.2 可选项）：单独线程查 RCON，不占 hub 线程；密码每次从文件读，换了不用重启
+            Config.Rcon rc = cfg.rcon;
+            RconClient rcon = new RconClient(rc.host(), rc.port(), () -> {
+                if (rc.passwordFile() != null) {
+                    try {
+                        return Files.readString(rc.passwordFile()).strip();
+                    } catch (IOException e) {
+                        return "";
+                    }
+                }
+                return rc.password();
+            });
+            ScheduledExecutorService presenceExec = Executors.newSingleThreadScheduledExecutor(r -> named(r, "presence"));
+            new PresencePoller(hub, rcon).start(presenceExec, cfg.autoPresence.pollS());
+            log.info("auto_presence available rcon={}:{} poll_s={} offline_after_min={}", rc.host(), rc.port(),
+                    cfg.autoPresence.pollS(), cfg.autoPresence.offlineAfterMin());
+        }
 
         log.info("started port={} model={} api={} data={}", javalin.port(), cfg.ollama.model(), cfg.ollama.api(),
                 cfg.dataDir);

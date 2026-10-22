@@ -11,9 +11,14 @@ public record Status(CompanionState companion, TaskInfo task, KeeperState keeper
         }
     }
 
-    public record KeeperState(boolean connected, Boolean running, String desired, Boolean gaveUp) {
-        public static KeeperState disconnected() {
-            return new KeeperState(false, null, null, null);
+    /**
+     * auto / ownerOnline 是"自动上下线"（手册 7.2 可选项）的状态：auto 为 null 表示后台没配 RCON、功能不可用；
+     * ownerOnline 为 null 表示没在查（开关关着或 RCON 查不到）。
+     */
+    public record KeeperState(boolean connected, Boolean running, String desired, Boolean gaveUp,
+                              Boolean auto, Boolean ownerOnline) {
+        public static KeeperState disconnected(Boolean auto, Boolean ownerOnline) {
+            return new KeeperState(false, null, null, null, auto, ownerOnline);
         }
     }
 

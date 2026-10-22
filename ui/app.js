@@ -9,6 +9,7 @@
   const el = {
     conn: $('conn'), online: $('online'), task: $('task'), health: $('health'), dim: $('dim'), inv: $('inv'),
     model: $('model'), keeper: $('keeper'), keeperStart: $('keeper-start'), keeperStop: $('keeper-stop'),
+    owner: $('owner'), auto: $('auto'), autoWrap: $('auto-wrap'),
     stop: $('stop'), chat: $('chat'), prefs: $('prefs'), prefsList: $('prefs-list'), prefsCount: $('prefs-count'),
     composer: $('composer'), input: $('input'), send: $('send'),
     tokenDialog: $('token-dialog'), tokenForm: $('token-form'), tokenInput: $('token-input'),
@@ -113,6 +114,18 @@
       pill(el.keeper, text, k.gave_up ? 'pill-bad' : k.running ? 'pill-ok' : '');
       el.keeperStart.disabled = false; el.keeperStop.disabled = false;
     }
+    // 自动上下线：auto 为 null/undefined 表示后台没配 rcon，开关灰掉
+    const autoAvailable = typeof k.auto === 'boolean';
+    el.auto.disabled = !autoAvailable;
+    el.auto.checked = k.auto === true;
+    el.autoWrap.title = autoAvailable
+      ? '后台每 30 秒问服务器谁在线：你进服就叫伙伴上线，你离开 10 分钟就让它下线'
+      : '后台的 config.yaml 没配 rcon，自动上下线用不了';
+    if (k.auto === true) {
+      const o = k.owner_online;
+      pill(el.owner, o === true ? '主人在线' : o === false ? '主人离线' : '主人：查询中', o === true ? 'pill-ok' : '');
+      el.owner.hidden = false;
+    } else { el.owner.hidden = true; }
   }
 
   // ---------- 偏好 ----------
@@ -257,6 +270,11 @@
   });
   el.keeperStart.addEventListener('click', () => { if (send('keeper_control', { action: 'start' })) system('已发出：叫它上线'); });
   el.keeperStop.addEventListener('click', () => { if (send('keeper_control', { action: 'stop' })) system('已发出：让它下线'); });
+  el.auto.addEventListener('change', () => {
+    const on = el.auto.checked;
+    if (!send('keeper_control', { action: on ? 'auto_on' : 'auto_off' })) { el.auto.checked = !on; return; }
+    system(on ? '已打开自动上下线：你进服它就来，你走 10 分钟它就下' : '已关闭自动上下线');
+  });
 
   window.addEventListener('beforeunload', () => { closedByUs = true; if (ws) ws.close(); });
 

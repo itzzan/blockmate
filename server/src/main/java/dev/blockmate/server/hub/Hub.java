@@ -88,6 +88,12 @@ public final class Hub {
     private boolean mcOnline;
     private KeeperStatus keeperStatus;
     private String keeperDesired;
+    /** 自动上下线（手册 7.2 可选项）：开关存在设置表 keeper_auto；没配 rcon 时 autoAvailable=false。 */
+    private final boolean autoAvailable;
+    private volatile boolean autoPresence;
+    private Boolean ownerOnline;
+    private final PresencePolicy presence;
+    private int rconFailures;
     private boolean modelOk = true;
     private long lastStatusPush;
     /** stop 命令的 id → 来源（button / model）。 */
@@ -105,6 +111,9 @@ public final class Hub {
         this.brainExec = brainExec;
         this.slot = new TaskSlot(cfg.timeouts);
         this.keeperDesired = memory.setting("keeper_desired").orElse("stopped");
+        this.autoAvailable = cfg.rcon != null;
+        this.autoPresence = autoAvailable && "on".equals(memory.setting("keeper_auto").orElse("off"));
+        this.presence = new PresencePolicy(cfg.autoPresence.offlineAfterMin() * 60_000L);
     }
 
     public void submit(Runnable r) {
@@ -455,6 +464,10 @@ public final class Hub {
     }
 
     private void keeperControl(String action) {
+        if ("auto_on".equals(action) || "auto_off".equals(action)) {
+            setAutoPresence("auto_on".equals(action));
+            return;
+        }
         if (!"start".equals(action) && !"stop".equals(action)) {
             return;
         }
@@ -467,6 +480,82 @@ public final class Hub {
             keeper.send(envelope(MessageType.KEEPER_CMD, Peer.KEEPER, new KeeperCmd(action)));
         }
         pushStatus(true);
+    }
+
+    // ---------------- 自动上下线（手册 7.2 可选项） ----------------
+
+    private void setAutoPresence(boolean on) {
+        if (on && !autoAvailable) {
+            notice("config.yaml 没配 rcon，自动上下线用不了", "warn");
+            pushStatus(true);
+            return;
+        }
+        autoPresence = on;
+        ownerOnline = null;
+        rconFailures = 0;
+        presence.reset();
+        memory.setSetting("keeper_auto", on ? "on" : "off");
+        log.info("auto_presence {}", on ? "on" : "off");
+        pushStatus(true);
+    }
+
+    /** PresencePoller 在自己的线程上读这个，决定要不要去查。 */
+    public boolean autoPresenceEnabled() {
+        return autoPresence;
+    }
+
+    /** RCON `list` 查到的在线名单（hub 线程）。 */
+    public void presenceObserved(List<String> online) {
+        if (!autoPresence) {
+            return;
+        }
+        boolean nowOnline = online.contains(cfg.ownerName);
+        boolean changed = ownerOnline == null || ownerOnline != nowOnline;
+        ownerOnline = nowOnline;
+        if (rconFailures > 0) {
+            log.info("presence rcon ok again after {} failure(s)", rconFailures);
+            rconFailures = 0;
+        }
+        PresencePolicy.Action action = presence.observe(nowOnline, "running".equals(keeperDesired), now());
+        if (changed || action != PresencePolicy.Action.NONE) {
+            log.info("presence owner_online={} players={} action={}", nowOnline, online.size(), action);
+        } else {
+            log.debug("presence owner_online={} players={}", nowOnline, online.size());
+        }
+        switch (action) {
+            case START -> {
+                notice("看到你进服了，叫伙伴上线", "info");
+                keeperControl("start");
+            }
+            case STOP -> {
+                notice("你离开 " + cfg.autoPresence.offlineAfterMin() + " 分钟了，让伙伴下线", "info");
+                keeperControl("stop");
+            }
+            default -> {
+                if (changed) {
+                    pushStatus(true);
+                }
+            }
+        }
+    }
+
+    /** RCON 查询失败（hub 线程）：连续 5 次才提示一次，避免刷屏。 */
+    public void presenceFailed(String why) {
+        if (!autoPresence) {
+            return;
+        }
+        rconFailures++;
+        boolean changed = ownerOnline != null;
+        ownerOnline = null;
+        if (rconFailures == 1 || rconFailures % 5 == 0) {
+            log.warn("presence rcon failed x{}: {}", rconFailures, why);
+        }
+        if (rconFailures == 5) {
+            notice("查不到谁在线（RCON 连不上），自动上下线先停着", "warn");
+        }
+        if (changed) {
+            pushStatus(true);
+        }
     }
 
     // ---------------- 状态、提示、推送 ----------------
@@ -507,9 +596,10 @@ public final class Hub {
         TaskInfo task = slot.current()
                 .map(t -> new TaskInfo(t.commandId(), t.name(), t.state().name().toLowerCase()))
                 .orElse(null);
-        Status.KeeperState ks = keeper == null ? Status.KeeperState.disconnected()
+        Boolean auto = autoAvailable ? autoPresence : null;
+        Status.KeeperState ks = keeper == null ? Status.KeeperState.disconnected(auto, ownerOnline)
                 : new Status.KeeperState(true, keeperStatus == null ? null : keeperStatus.running(), keeperDesired,
-                        keeperStatus == null ? null : keeperStatus.gaveUp());
+                        keeperStatus == null ? null : keeperStatus.gaveUp(), auto, ownerOnline);
         return new Status(companion, task, ks, new Status.ModelState(modelOk));
     }
 

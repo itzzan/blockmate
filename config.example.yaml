@@ -27,3 +27,13 @@ timeouts_s:                     # 任务超时（细则第 8 节）；follow 没
 episode_time: "23:55"           # 每天几点把当天的事写成一条日记
 backup_time: "03:30"            # 每天几点 VACUUM INTO 备份，保留 14 份
 log_level: "INFO"               # INFO 不含聊天原文；排错时可改 DEBUG
+
+# 可选（手册 7.2）：自动上下线。后台每 poll_s 秒用 RCON 问服务器谁在线：你进服就叫伙伴上线，
+# 你离开 offline_after_min 分钟就让它下线。网页上有开关，默认关。不想要就把 rcon 这一段整段删掉。
+rcon:
+  host: "127.0.0.1"             # 服务器 server.properties 里的 server-ip（RCON 和游戏听同一个地址；没设 server-ip 就是 127.0.0.1）
+  port: 25575                   # server.properties 里的 rcon.port
+  password_file: "/Users/__USER__/mcserver/rcon.pass"   # 一行密码的文件（chmod 600），和备份脚本共用；也可以直接写 password: "…"
+auto_presence:
+  poll_s: 30
+  offline_after_min: 10

@@ -379,6 +379,13 @@ timeouts_s:
 episode_time: "23:55"           # 每天写日记的时间
 backup_time: "03:30"            # 每天备份的时间
 log_level: "INFO"
+rcon:                           # 可选（手册 7.2 自动上下线）；整段不写就是不启用
+  host: "127.0.0.1"             # server.properties 的 server-ip
+  port: 25575
+  password_file: "/Users/<你>/mcserver/rcon.pass"   # 一行密码；或 password: "…"
+auto_presence:
+  poll_s: 30                    # 多久查一次谁在线
+  offline_after_min: 10         # 主人离开多久后让伙伴下线
 ```
 
 persona.md 由 Brain 每次请求前检查修改时间，变了就重新读，不用重启。
@@ -400,6 +407,8 @@ keeper_status：
 
 `keeper.yaml`（MacBook，gitignore）：`hub_url`、`token`、`launch_cmd`（完整命令行数组）、`process_pattern`（给 pgrep -f 用，默认 `companion-vanilla-1.20.1`）、`check_interval_s: 10`、`max_restarts_per_10min: 3`。
 
+**自动上下线**（手册 7.2 可选项，2026-10-22 实现）：hub 在自己的线程上每 `poll_s` 秒用 RCON 发 `list`（config 配了 `rcon` 才有）。开关存在设置表 `keeper_auto`（on/off，默认 off），网页用 `keeper_control` 的 `auto_on` / `auto_off` 切换。决策（PresencePolicy）：主人从不在服变成在服的那一刻 → 等同按"叫它上线"（只在变化时触发，手动"让它下线"后不会立刻又拉起；开关打开时主人已在服且伙伴没期望在线也算一次）；主人连续不在服满 `offline_after_min` 分钟且伙伴期望在线 → 等同按"让它下线"，一次，直到主人回来过。RCON 连续失败 5 次给网页一条 warn 提示，日志只在第 1 次和每 5 次记一条。
+
 待验证：Prism 启动的游戏进程命令行里是否真的含实例名（第 3 步时游戏进程没抓到，3.6 做的时候要确认；不含就改 process_pattern 为实例目录路径）。
 
 ## 14. ui 通道细则
@@ -410,14 +419,14 @@ keeper_status：
   ```json
   {"companion": {"online": true, "in_world": true, "health": 20, "food": 18, "dim": "minecraft:overworld", "pos": {…}},
    "task": {"name": "follow", "state": "running"} ,
-   "keeper": {"connected": true, "running": true, "desired": "running", "gave_up": false},
+   "keeper": {"connected": true, "running": true, "desired": "running", "gave_up": false, "auto": false, "owner_online": null},
    "model": {"ok": true}}
   ```
-  伙伴离线时 `companion.online:false`，其余为 null。
+  伙伴离线时 `companion.online:false`，其余为 null。`keeper.auto` 是自动上下线开关（null = 后台没配 rcon，网页把开关灰掉）；`owner_online` 是 RCON 查到的主人在不在服（开关关着或查不到时为 null）。
 - `stop`：空 body。hub 直接给 mc 发 stop 命令，并给 ui 推一条 status。
 - `preferences`：`{"items": [{"id": "…", "text": "…", "ts": …}]}`。
 - `preference_action`：`{"id": "…", "action": "confirm" | "ignore"}`。
-- `keeper_control`：`{"action": "start" | "stop"}`。
+- `keeper_control`：`{"action": "start" | "stop" | "auto_on" | "auto_off"}`。
 - `notice`：`{"text": "我现在不在游戏里", "level": "info" | "warn"}`。
 
 网页的 token 存在 localStorage（键 `companion_token`），断线按 1/2/4/…/15 秒退避重连，状态条显示"重连中"。

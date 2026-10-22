@@ -17,10 +17,14 @@
       <span id="inv" class="pill" title="背包" hidden>背包：--</span>
       <span id="model" class="pill" title="大模型">模型 --</span>
       <span id="keeper" class="pill" title="MacBook 上的守护进程">keeper 未连</span>
+      <span id="owner" class="pill" title="后台用 RCON 查到的主人在线状态" hidden>主人：--</span>
     </div>
     <div class="actions">
       <button id="keeper-start" class="btn btn-small" type="button" disabled title="让 keeper 启动游戏客户端">叫它上线</button>
       <button id="keeper-stop" class="btn btn-small" type="button" disabled title="让 keeper 关闭游戏客户端">让它下线</button>
+      <label id="auto-wrap" class="toggle" title="后台每 30 秒问服务器谁在线：你进服就叫伙伴上线，你离开 10 分钟就让它下线。需要 config.yaml 配了 rcon">
+        <input id="auto" type="checkbox" disabled> 自动上下线
+      </label>
       <button id="stop" class="btn btn-stop" type="button" title="立刻停下，不经过模型">停</button>
     </div>
   </header>

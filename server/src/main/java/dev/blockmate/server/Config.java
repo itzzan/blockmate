@@ -19,6 +19,14 @@ public final class Config {
     public record Timeouts(int ackS, int comeHereS, int pickUpS, int deliverS, int stopS, int rejoinS) {
     }
 
+    /** 服务器的 RCON（手册 7.2 可选的自动上下线用）。密码优先从 passwordFile 读（一行），否则用 password。 */
+    public record Rcon(String host, int port, Path passwordFile, String password) {
+    }
+
+    /** 自动上下线：每 pollS 秒查一次谁在线；主人离开 offlineAfterMin 分钟后让伙伴下线。开关本身存在设置表里。 */
+    public record AutoPresence(int pollS, int offlineAfterMin) {
+    }
+
     public final Path baseDir;
     public final int port;
     public final String token;
@@ -32,6 +40,9 @@ public final class Config {
     public final LocalTime episodeTime;
     public final LocalTime backupTime;
     public final String logLevel;
+    /** config.yaml 没有 rcon 一段时为 null，自动上下线不可用。 */
+    public final Rcon rcon;
+    public final AutoPresence autoPresence;
 
     private Config(Path baseDir, Map<String, Object> m) {
         this.baseDir = baseDir;
@@ -51,6 +62,16 @@ public final class Config {
         this.episodeTime = LocalTime.parse(str(m, "episode_time", "23:55"));
         this.backupTime = LocalTime.parse(str(m, "backup_time", "03:30"));
         this.logLevel = str(m, "log_level", "INFO");
+        Map<String, Object> r = sub(m, "rcon");
+        if (r.isEmpty()) {
+            this.rcon = null;
+        } else {
+            String pf = str(r, "password_file", "");
+            this.rcon = new Rcon(str(r, "host", "127.0.0.1"), intOf(r, "port", 25575),
+                    pf.isBlank() ? null : baseDir.resolve(pf), str(r, "password", ""));
+        }
+        Map<String, Object> a = sub(m, "auto_presence");
+        this.autoPresence = new AutoPresence(intOf(a, "poll_s", 30), intOf(a, "offline_after_min", 10));
     }
 
     public static Config load(Path file) throws IOException {
