@@ -24,6 +24,7 @@ public final class Main {
     private final KeeperConfig cfg;
     private final KeeperPolicy policy;
     private final ProcessOps ops;
+    private boolean gaveUpLogged;
     private final ScheduledExecutorService exec = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "keeper"));
     private HubClient hub;
 
@@ -114,10 +115,12 @@ public final class Main {
             default -> {
             }
         }
-        if (policy.gaveUp() && action == KeeperPolicy.Action.NONE && pid.isEmpty()
-                && policy.desired() == KeeperPolicy.Desired.RUNNING) {
+        boolean givingUp = policy.gaveUp() && action == KeeperPolicy.Action.NONE && pid.isEmpty()
+                && policy.desired() == KeeperPolicy.Desired.RUNNING;
+        if (givingUp && !gaveUpLogged) {
             Log.warn("10 分钟内拉起 " + cfg.maxRestartsPer10Min() + " 次都没活下来，放弃；网页再点一次上线会重新开始");
         }
+        gaveUpLogged = givingUp; // 只在刚放弃时记一条，不每 10 秒刷一条
         Optional<Long> after = action == KeeperPolicy.Action.STOP ? ops.findGamePid(cfg.processPattern()) : pid;
         hub.send(ProtocolCodec.envelope(MessageType.KEEPER_STATUS, Peer.KEEPER, Peer.HUB, new KeeperStatus(
                 after.isPresent(), after.map(Long::intValue).orElse(null),

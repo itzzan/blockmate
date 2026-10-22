@@ -29,8 +29,9 @@ public final class KeeperPolicy {
     }
 
     /** 后台说的期望状态（hello 带来的，或 keeper_cmd）。改成 RUNNING 时清掉"放弃"状态和重启预算。 */
+    /** 收到 start（哪怕期望本来就是在跑）都重新给 10 分钟 3 次的额度：放弃之后网页再点"上线"必须能重新开始。 */
     public void setDesired(Desired d) {
-        if (d == Desired.RUNNING && desired != Desired.RUNNING) {
+        if (d == Desired.RUNNING && (desired != Desired.RUNNING || gaveUp)) {
             gaveUp = false;
             restarts.clear();
         }

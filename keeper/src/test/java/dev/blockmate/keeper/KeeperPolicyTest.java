@@ -72,4 +72,21 @@ class KeeperPolicyTest {
         p.setDesired(KeeperPolicy.Desired.STOPPED);
         assertEquals(KeeperPolicy.Action.NONE, p.decide(false, 0));
     }
+
+    @Test
+    void 放弃之后再收到start要重新开始() {
+        KeeperPolicy p = new KeeperPolicy(3, 60_000);
+        p.setDesired(KeeperPolicy.Desired.RUNNING);
+        long t = 0;
+        for (int i = 0; i < 3; i++) {
+            assertEquals(KeeperPolicy.Action.START, p.decide(false, t));
+            p.onStarted(t);
+            t += 61_000;
+        }
+        assertEquals(KeeperPolicy.Action.NONE, p.decide(false, t), "10 分钟内第 4 次：放弃");
+        assertTrue(p.gaveUp());
+        p.setDesired(KeeperPolicy.Desired.RUNNING);
+        assertFalse(p.gaveUp(), "期望已经是在跑，再点上线也要重新开始");
+        assertEquals(KeeperPolicy.Action.START, p.decide(false, t + 1000));
+    }
 }

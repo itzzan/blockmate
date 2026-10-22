@@ -13,12 +13,19 @@ public final class PromptBuilder {
     private PromptBuilder() {
     }
 
+    /** 动作规则，放在人设后面（2026-10-22：模型常用文字答应"等着/停了"却不调工具）。 */
+    static final String ACTION_RULE = "动作规则：主人让你停、等、过来、跟着、捡、给的时候，必须调用对应的工具，哪怕你正在做别的；"
+            + "只用文字答应而不调工具，等于没做。例子：主人说「等在这」→ 调用 wait_here；主人说「停」→ 调用 stop；"
+            + "主人说「过来」→ 调用 come_here。你自己看不见地上有什么，主人说「把木头捡起来」就调用 pick_up 去试，"
+            + "有没有、捡到多少由工具结果告诉你，不要凭背包里已经有多少来推断地上没有。闲聊不用工具。";
+
     /**
      * system 部分只放一次对话里基本不变的东西（人设、偏好、日记），不放每轮都变的状态句，
      * 这样 Ollama 的前缀缓存能一直命中（2026-10-22：状态句在 system 里时每轮重算 1000 多 token，首字 9 秒）。
      */
     public static String systemPrompt(String persona, BrainContext ctx) {
         StringBuilder sb = new StringBuilder(persona.strip()).append("\n\n");
+        sb.append(ACTION_RULE).append("\n\n");
         if (ctx.activePreferences() != null && !ctx.activePreferences().isEmpty()) {
             sb.append("已确认的偏好和约定：\n");
             for (String p : ctx.activePreferences()) {

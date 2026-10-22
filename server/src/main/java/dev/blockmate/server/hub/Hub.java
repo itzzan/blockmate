@@ -29,6 +29,7 @@ import dev.blockmate.server.Config;
 import dev.blockmate.server.brain.Brain;
 import dev.blockmate.server.brain.BrainContext;
 import dev.blockmate.server.brain.ItemNames;
+import dev.blockmate.server.brain.Shortcuts;
 import dev.blockmate.server.brain.SnapshotSummary;
 import dev.blockmate.server.brain.Tools;
 import dev.blockmate.server.gateway.ModelException;
@@ -303,8 +304,16 @@ public final class Hub {
         }
         String text = chat.text().strip();
         StoredMessage msg = memory.saveMessage("owner", text, null, null);
-        log.info("chat_in len={} msg_id={}", text.length(), msg.id());
         String replyId = UUID.randomUUID().toString();
+        Optional<CommandName> shortcut = Shortcuts.match(text);
+        if (shortcut.isPresent()) {
+            // 固定短语：不经过模型，直接当作模型调了这个工具（动作结束后照旧让它说一句）
+            log.info("chat_in len={} msg_id={} shortcut={}", text.length(), msg.id(), shortcut.get().wire());
+            ToolCall call = new ToolCall("shortcut-" + replyId.substring(0, 8), shortcut.get().wire(), new JsonObject());
+            onDecision(replyId, env.id(), msg, new ModelReply("", List.of(call), 0, 0, 0));
+            return;
+        }
+        log.info("chat_in len={} msg_id={}", text.length(), msg.id());
         BrainContext ctx = context();
         brainExec.execute(() -> {
             try {

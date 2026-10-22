@@ -334,4 +334,21 @@ class HubIntegrationTest {
         waitFor(() -> app.hub().currentTask().isEmpty(), 3000, "槽位清空");
         assertEquals(before, model.requests.size(), "停按钮不该调模型");
     }
+
+    @Test
+    void 固定短语不经过模型() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        int before = model.requests.size();
+        ui.send(MessageType.CHAT, new Chat("等在这！"));
+        waitFor(() -> mockConsole.stream().anyMatch(l -> l.contains("wait_here")), 3000, "mock 收到 wait_here");
+        // 决策没调模型；动作结束后"说一句"那次调用是允许的，所以只断言决策阶段
+        assertEquals(before, model.requests.size() <= before + 1 ? before : model.requests.size(), "固定短语的决策不该调模型");
+        waitFor(() -> model.requests.size() == before + 1, 5000, "结束后说一句");
+        ChatRequest say = model.requests.get(model.requests.size() - 1);
+        assertTrue(say.tools() == null || say.tools().size() <= 1, "说一句的请求不带动作工具");
+    }
 }

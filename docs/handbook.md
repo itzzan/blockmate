@@ -265,6 +265,8 @@ idle ──command 发出──▶ pending ──ack accepted──▶ running �
 
 【细则】
 
+固定短语表（2026-10-22）：主人的话去掉标点空格后正好是「停 / 停下 / 停一下 / 别动 / 站住 / 别跟了」→ stop，「等在这 / 等在这里 / 等在这儿 / 在这等 / 在这等我 / 在这儿等 / 等着 / 待着」→ wait_here，「跟我来 / 跟着我 / 跟上 / 跟我走」→ follow，「过来 / 来我这 / 来我这里 / 到我这来」→ come_here 时，hub 直接按模型调了该工具处理（日志 `chat_in … shortcut=…`），不经过模型；带别的内容的句子和其它说法仍交给模型。起因：6.5 第一批"等在这"10 次里 6 次模型只用文字答应没调工具。system 里人设之后固定加一段"动作规则"（PromptBuilder.ACTION_RULE）。
+
 提示词顺序（2026-10-22 调整，为了让 Ollama 的前缀缓存命中）：system = persona.md 全文 + 「已确认的偏好」列表 + 「最近 3 条日记」（episodes），**不含**每轮都变的状态句；然后是最近 N 条 messages（role 映射：owner→user，companion→assistant，owner_ingame→user 并加前缀"（游戏里说）"）；最后一条 user = 「现在的状态」（snapshot 摘要）+ 空行 + 「主人说：」+ 这次的输入（动作结束后的内部提示不加"主人说"）。调整前状态句在 system 里，每轮缓存只能复用到人设结尾，后面 1000 多 token 全部重算，首字 9 秒。
 
 snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，生命 20/20，饥饿 18/20，背包：橡木原木 8、面包 3。主人在 4 格外。当前任务：跟随中。」看不到主人时写「没看到主人」，不在世界里写「你现在不在游戏里」。物品 id 到中文名的映射放 `server/src/main/resources/items_zh.json`，没有映射的直接显示 id。
