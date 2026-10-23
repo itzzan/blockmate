@@ -152,6 +152,14 @@ public final class Brain {
             case DISCONNECTED -> "掉线了";
             case EXECUTOR_UNRESPONSIVE -> "身体没反应";
             case REJECTED -> "现在做不了这个";
+            // 任务单 9 加的
+            case NOT_ALLOWED -> "那个方块不能碰";
+            case NO_MATERIALS -> "材料不够";
+            case NO_RECIPE -> "没有这个配方";
+            case NO_BED -> "没有能睡的床";
+            case NOT_NIGHT -> "还没到晚上，睡不了";
+            case NO_PLACE_KNOWN -> "没记过那个地方";
+            case PLAN_ABORTED -> "整个计划被停掉了";
         };
     }
 }

@@ -1,7 +1,10 @@
 package dev.blockmate.protocol;
 
+import com.google.gson.JsonObject;
+
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -82,6 +85,55 @@ class BodyRecordsTest {
         Status.KeeperState off = Status.KeeperState.disconnected(null, null);
         assertFalse(off.connected());
         assertNull(off.auto());
+    }
+
+    @Test
+    void 任务单9的命令参数和结果细节() {
+        Command g = Command.of(CommandName.GOTO, new Command.GotoArgs(null, null, null, "home"));
+        assertFalse(g.argsAs(Command.GotoArgs.class).hasPos());
+        assertEquals("home", g.argsAs(Command.GotoArgs.class).place());
+        Command m = Command.of(CommandName.MINE, new Command.MineArgs("minecraft:oak_log", 20, null));
+        assertEquals(32, m.argsAs(Command.MineArgs.class).radiusOrDefault());
+        assertTrue(ProtocolCodec.gson().toJson(m).contains("\"count\":20"), ProtocolCodec.gson().toJson(m));
+        assertEquals(1, Command.of(CommandName.CRAFT, new Command.CraftArgs("minecraft:stone_pickaxe", null))
+                .argsAs(Command.CraftArgs.class).countOrDefault());
+        assertFalse(CommandName.REMEMBER_PLACE.occupiesSlot());
+        assertTrue(CommandName.MINE.occupiesSlot());
+        assertEquals(CommandName.USE_FURNACE, CommandName.fromWire("use_furnace"));
+        assertNull(CommandName.fromWire("fly"));
+        String r = ProtocolCodec.gson().toJson(Result.failed("c9", Reason.NO_MATERIALS, new Result.MineDetail(12)));
+        assertTrue(r.contains("\"reason\":\"no_materials\""), r);
+        assertTrue(r.contains("\"mined\":12"), r);
+        String e = ProtocolCodec.gson().toJson(Result.ok("c10", new Result.EatDetail("minecraft:bread", 20)));
+        assertTrue(e.contains("\"food_after\":20"), e);
+    }
+
+    @Test
+    void plan消息和快照新字段() {
+        Plan plan = new Plan("p1", "去弄 20 根木头回来", List.of(
+                new Plan.Step(0, CommandName.MINE, ProtocolCodec.toBody(new Command.MineArgs("minecraft:oak_log", 20, null)),
+                        PlanStepState.RUNNING),
+                new Plan.Step(1, CommandName.COME_HERE, new JsonObject(), PlanStepState.PENDING),
+                new Plan.Step(2, CommandName.DELIVER, ProtocolCodec.toBody(new Command.DeliverArgs("minecraft:oak_log", 20, null)),
+                        PlanStepState.PENDING)), 0);
+        String json = ProtocolCodec.gson().toJson(plan);
+        assertTrue(json.contains("\"plan_id\":\"p1\""), json);
+        assertTrue(json.contains("\"state\":\"running\""), json);
+        assertTrue(json.contains("\"command\":\"mine\""), json);
+        Plan back = ProtocolCodec.gson().fromJson(json, Plan.class);
+        assertEquals(3, back.steps().size());
+        assertEquals(PlanStepState.PENDING, back.steps().get(2).state());
+        assertEquals(0, back.current());
+
+        Snapshot s = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null, Map.of(),
+                13000, true, List.of(new Snapshot.InventorySlot(9, "minecraft:crafting_table", 1)));
+        String sj = ProtocolCodec.gson().toJson(s);
+        assertTrue(sj.contains("\"time_of_day\":13000"), sj);
+        assertTrue(sj.contains("\"is_raining\":true"), sj);
+        assertTrue(sj.contains("\"slots\":[{\"slot\":9,\"item\":\"minecraft:crafting_table\",\"count\":1}]"), sj);
+        Snapshot old = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null, null);
+        assertNull(old.timeOfDay());
+        assertFalse(ProtocolCodec.gson().toJson(old).contains("time_of_day"), "旧模组不发就不输出");
     }
 
     @Test

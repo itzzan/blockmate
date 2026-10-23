@@ -77,6 +77,7 @@
 | preference_action | ui → hub | 对某条偏好点了"确认"或"忽略" |
 | keeper_control | ui → hub | "叫它上线 / 让它下线"（第 7 步） |
 | notice | hub → ui | 固定的中文提示（模型超时、伙伴不在游戏里等） |
+| plan | hub → ui | 任务单 9 加：一句话拆成的多步计划和进度，每步状态变化时整条重发，网页画进度条 |
 
 ### 3.3 `/ws/keeper`：hub 与守护进程
 
@@ -128,7 +129,11 @@ mock-executor 的 hello 与真模组相同，只是 `mod_version` 写 `mock`。
   "food": 18,
   "inventory": {"minecraft:oak_log": 8, "minecraft:bread": 3},
   "owner": {"visible": true, "distance": 4.2, "pos": {"x": 124.0, "y": 64.0, "z": -31.0}},
-  "task": {"command_id": "…", "name": "follow", "state": "running"}
+  "task": {"command_id": "…", "name": "follow", "state": "running"},
+  "ground_items": {"minecraft:oak_log": 8},
+  "time_of_day": 6000,
+  "is_raining": false,
+  "slots": [{"slot": 0, "item": "minecraft:oak_log", "count": 8}, {"slot": 9, "item": "minecraft:crafting_table", "count": 1}]
 }}
 ```
 
@@ -141,6 +146,9 @@ mock-executor 的 hello 与真模组相同，只是 `mod_version` 写 `mock`。
 | owner | `visible:false` 表示没看到主人（不等于主人不在）；visible:true 时必有 distance 和 pos |
 | task | 当前任务槽；空闲时为 `null` |
 | ground_items | 伙伴 8 格内地上的掉落物，物品 id → 数量（2026-10-23 加）；`{}` 表示地上没东西，字段缺失/`null` 表示不知道（旧模组）。后台状态句写成"地上 8 格内有：橡木原木 8" |
+| time_of_day | 任务单 9 加：世界时间 0–24000（0 日出、6000 正午、13000 入夜、18000 午夜）；null = 不知道 |
+| is_raining | 任务单 9 加：是否在下雨；null = 不知道 |
+| slots | 任务单 9 加：背包逐格内容，只列非空格 `{slot, item, count}`（0–8 快捷栏，9–35 主背包，40 副手）；合成要知道整件物品在哪一格、有几堆。inventory 仍是按物品汇总的总数 |
 
 hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 原样塞进提示词。
 
@@ -184,6 +192,22 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | cancel | command_id | 取消指定任务。模组回 ack，再给被取消的任务发 result cancelled，最后给 cancel 自己回 result ok（手册 5.4：stop 和 cancel 立即回 result）。hub 对 stop / cancel 自己的 result 只记 events，不进任务槽 |
 | rejoin | — | 重新连接服务器 |
 
+第二阶段（任务单 9）加的十一条，模组逐个实现，没实现的收到就 `ack accepted:false, reason:rejected`。占槽规则不变：只有 stop / cancel / remember_place 不占槽。
+
+| name | args | 说明 |
+| --- | --- | --- |
+| goto | x, y, z 或 place（记过的地点名，如 home / bed） | 走到目标 2 格内；地点没记过回 no_place_known |
+| mine | block（方块 id），count，radius（默认 32） | 在半径内找并挖该方块，直到背包多了 count 个；block 不在 knowledge/blocks.yaml 白名单回 not_allowed；中途卡住 / 找不到回 stuck / item_not_found，detail 带已挖到的数 |
+| collect | radius（默认 8），item（可选，只捡这一种） | 捡半径内所有掉落物 |
+| craft | item（物品 id），count（默认 1） | 合成；配方问游戏客户端，没有回 no_recipe，材料不够回 no_materials；需要工作台时模组自己找 8 格内的或放一个再收回 |
+| place | block（只允许 minecraft:crafting_table / minecraft:torch / 自己的床），pos（可选） | 在脚边或指定位置放方块；别的方块回 not_allowed |
+| pickup_block | block（默认 minecraft:crafting_table） | 收回自己放过的方块；只收自己放的，位置模组自己记 |
+| eat | item（可选） | 吃 item 或背包里任意食物；没食物回 no_materials |
+| sleep | — | 走到 8 格内的床或记过的 bed 地点睡下；没床回 no_bed，还没到晚上回 not_night |
+| go_home | — | 等于 goto place=home；没记过回 no_place_known |
+| remember_place | name，pos（可选，默认当前位置） | 记地点，模组和 hub 都存一份；立刻 result ok，不占槽 |
+| use_furnace | input，fuel，count（默认全部） | 用 8 格内的熔炉把 input 烧完并取出；没熔炉回 item_not_found，没燃料回 no_materials |
+
 ### 7.2 ack
 
 ```json
@@ -218,6 +242,7 @@ detail 按命令不同：
 - stop：`{"stationary": true | false, "attempts": 1}`。stationary=false 表示三次 cancelEverything 之后仍未静止。
 - pick_up：`{"picked": 8}`。
 - rejoin：`{"attempt": 2}`。
+- 任务单 9 加的：goto / go_home `{"distance": 1.6}`；mine `{"mined": 12}`（失败时也带，说明挖到一半）；collect `{"picked": 5}`；craft `{"crafted": 4}`；place / pickup_block `{"pos": {…}}`；eat `{"item": "minecraft:bread", "food_after": 20}`；sleep `{"slept": true}`；use_furnace `{"smelted": 8}`。
 
 ### 7.5 原因码
 
@@ -238,6 +263,13 @@ detail 按命令不同：
 | disconnected | mc / hub | 执行中掉线；或 hub 在 mc 断线时替它结束任务 |
 | executor_unresponsive | hub | 3 秒没 ack |
 | rejected | mc | 命令在当前状态下不能做（不在世界里、参数不合法） |
+| not_allowed | mc | 任务单 9：方块不在 knowledge/blocks.yaml 白名单里，或 place 的方块不是允许的三种 |
+| no_materials | mc | 任务单 9：合成 / 吃 / 烧的材料不够 |
+| no_recipe | mc | 任务单 9：游戏里没有这个配方 |
+| no_bed | mc | 任务单 9：附近和记过的地点都没有能睡的床 |
+| not_night | mc | 任务单 9：还不能睡（不是夜晚也没在打雷） |
+| no_place_known | mc / hub | 任务单 9：goto / go_home 用的地点名没记过 |
+| plan_aborted | hub | 任务单 9：整个多步计划被"停"或新计划作废，计划里还没做的步骤都用它结束 |
 
 ## 8. 任务状态机（hub 侧，单任务槽）
 
@@ -257,7 +289,7 @@ idle ──command 发出──▶ pending ──ack accepted──▶ running �
 - 新 command 到来而槽位非空：hub 先给 mc 发新 command；模组自己负责先给旧任务回 `result cancelled` 再回新任务的 ack（【手册】6.4）。hub 收到旧任务的 cancelled 就把它从槽位清掉；如果旧任务的 cancelled 迟于新任务的 ack 到达，hub 也要接受（按 command_id 匹配，不按顺序）。
 - `stop` 和 `cancel` 不占槽位，是对槽位的操作。
 - hub 自己合成的 result（timeout / executor_unresponsive / disconnected）之后，如果 mc 再发来同一 command_id 的 result，记 WARN 并丢弃。
-- 任务超时（【细则】默认值，config 可改）：follow 不超时；come_here 90 秒；pick_up 45 秒；deliver 90 秒；stop 5 秒；rejoin 60 秒；wait_here / report_status 5 秒。
+- 任务超时（【细则】默认值，config 可改）：follow 不超时；come_here 90 秒；pick_up 45 秒；deliver 90 秒；stop 5 秒；rejoin 60 秒；wait_here / report_status 5 秒。 任务单 9 加的命令（先写死在 TaskSlot 里，任务单 10 做队列时再搬进 config）：goto / go_home 120 秒；mine 300 秒；collect 45 秒；craft 30 秒；place / pickup_block 20 秒；eat 15 秒；sleep 90 秒；use_furnace 300 秒；remember_place 5 秒。
 - 伙伴离线（/ws/mc 没有连接或 in_world=false）时收到动作请求：【手册】直接用人话回"我现在不在游戏里"，不调模型。
 
 ## 9. Brain：每次问模型带什么

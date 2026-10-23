@@ -1,0 +1,1 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0056-4000-8000-000000000056", "ts": 1760950056000, "from": "hub", "to": "mc", "body": {"name": "use_furnace", "args": {"input": "minecraft:raw_iron", "fuel": "minecraft:coal", "count": 8}}}

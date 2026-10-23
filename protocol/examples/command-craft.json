@@ -1,0 +1,1 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0053-4000-8000-000000000053", "ts": 1760950053000, "from": "hub", "to": "mc", "body": {"name": "craft", "args": {"item": "minecraft:stone_pickaxe", "count": 1}}}

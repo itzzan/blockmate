@@ -1,0 +1,1 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0050-4000-8000-000000000050", "ts": 1760950050000, "from": "hub", "to": "mc", "body": {"name": "goto", "args": {"place": "home"}}}

@@ -1,0 +1,1 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0052-4000-8000-000000000052", "ts": 1760950052000, "from": "hub", "to": "mc", "body": {"name": "collect", "args": {"radius": 8}}}

@@ -1,0 +1,1 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0055-4000-8000-000000000055", "ts": 1760950055000, "from": "hub", "to": "mc", "body": {"name": "remember_place", "args": {"name": "home", "pos": {"x": 120.0, "y": 64.0, "z": -33.0}}}}

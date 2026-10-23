@@ -24,6 +24,7 @@ public enum MessageType {
     @SerializedName("preference_action") PREFERENCE_ACTION("preference_action"),
     @SerializedName("keeper_control") KEEPER_CONTROL("keeper_control"),
     @SerializedName("notice") NOTICE("notice"),
+    @SerializedName("plan") PLAN("plan"),
     // /ws/keeper
     @SerializedName("keeper_cmd") KEEPER_CMD("keeper_cmd"),
     @SerializedName("keeper_status") KEEPER_STATUS("keeper_status");

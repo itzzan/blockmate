@@ -137,8 +137,16 @@ public final class TaskSlot {
             case DELIVER -> timeouts.deliverS() * 1000L;
             case STOP -> timeouts.stopS() * 1000L;
             case REJOIN -> timeouts.rejoinS() * 1000L;
-            case REPORT_STATUS -> 5000L;
+            case REPORT_STATUS, REMEMBER_PLACE -> 5000L;
             case FOLLOW, WAIT_HERE, CANCEL -> 0L;
+            // 任务单 9 加的命令：先写死默认值，任务单 10 做队列时搬进 config（handbook 第 8 节）
+            case GOTO, GO_HOME -> 120_000L;
+            case MINE, USE_FURNACE -> 300_000L;
+            case COLLECT -> 45_000L;
+            case CRAFT -> 30_000L;
+            case PLACE, PICKUP_BLOCK -> 20_000L;
+            case EAT -> 15_000L;
+            case SLEEP -> 90_000L;
         };
     }
 

@@ -1,0 +1,1 @@
+{"v": 1, "type": "result", "id": "0a1b2c3d-0061-4000-8000-000000000061", "ts": 1760950061000, "from": "hub", "to": "ui", "body": {"command_id": "0a1b2c3d-0051-4000-8000-000000000051", "status": "cancelled", "reason": "plan_aborted"}}

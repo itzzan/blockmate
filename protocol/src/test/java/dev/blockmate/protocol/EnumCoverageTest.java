@@ -23,7 +23,8 @@ class EnumCoverageTest {
     void 九个命令() {
         Set<String> wires = Arrays.stream(CommandName.values()).map(CommandName::wire).collect(Collectors.toSet());
         assertEquals(Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver", "report_status",
-                "cancel", "rejoin"), wires);
+                "cancel", "rejoin", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home",
+                "remember_place", "use_furnace"), wires);
     }
 
     @Test
@@ -31,7 +32,8 @@ class EnumCoverageTest {
         Set<String> wires = Arrays.stream(Reason.values()).map(Reason::wire).collect(Collectors.toSet());
         assertEquals(Set.of("target_lost", "target_other_dim", "target_too_far", "not_picked", "path_failed", "stuck",
                 "item_not_found", "inventory_full", "timeout", "died", "disconnected", "executor_unresponsive",
-                "rejected"), wires);
+                "rejected",
+                "not_allowed", "no_materials", "no_recipe", "no_bed", "not_night", "no_place_known", "plan_aborted"), wires);
     }
 
     @Test

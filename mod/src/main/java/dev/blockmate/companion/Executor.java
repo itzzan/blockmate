@@ -162,6 +162,11 @@ public final class Executor implements AbstractGameEventListener {
             case PICK_UP -> startPickUp(env.id(), cmd.args(), mc);
             case DELIVER -> startDeliver(env.id(), cmd.args(), mc);
             case REJOIN -> startRejoin(env.id(), mc);
+            default -> {
+                // 任务单 9 加的新命令，模组还没实现：按 handbook 7.1 立刻拒绝，别让 hub 等 3 秒判无响应
+                CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
+                send(MessageType.ACK, Ack.rejected(env.id()));
+            }
         }
     }
 

@@ -88,6 +88,18 @@ public final class SnapshotSummary {
             case REPORT_STATUS -> "查看状态";
             case STOP -> "正在停下";
             case CANCEL -> "取消中";
+            // 任务单 9 加的
+            case GOTO -> "正在赶路";
+            case MINE -> "正在挖东西";
+            case COLLECT -> "正在捡掉落物";
+            case CRAFT -> "正在合成";
+            case PLACE -> "正在放方块";
+            case PICKUP_BLOCK -> "正在收回方块";
+            case EAT -> "正在吃东西";
+            case SLEEP -> "正在睡觉";
+            case GO_HOME -> "正在回家";
+            case REMEMBER_PLACE -> "记地点";
+            case USE_FURNACE -> "正在用熔炉";
         };
     }
 }

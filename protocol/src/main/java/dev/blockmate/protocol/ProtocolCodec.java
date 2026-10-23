@@ -129,6 +129,8 @@ public final class ProtocolCodec {
                 return KeeperControl.class;
             case NOTICE:
                 return Notice.class;
+            case PLAN:
+                return Plan.class;
             case KEEPER_CMD:
                 return KeeperCmd.class;
             case KEEPER_STATUS:

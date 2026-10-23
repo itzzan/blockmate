@@ -1,0 +1,1 @@
+{"v": 1, "type": "result", "id": "0a1b2c3d-0059-4000-8000-000000000059", "ts": 1760950059000, "from": "mc", "to": "hub", "body": {"command_id": "0a1b2c3d-0053-4000-8000-000000000053", "status": "ok", "detail": {"crafted": 1}}}

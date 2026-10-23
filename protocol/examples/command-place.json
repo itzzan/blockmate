@@ -1,0 +1,1 @@
+{"v": 1, "type": "command", "id": "0a1b2c3d-0054-4000-8000-000000000054", "ts": 1760950054000, "from": "hub", "to": "mc", "body": {"name": "place", "args": {"block": "minecraft:crafting_table"}}}

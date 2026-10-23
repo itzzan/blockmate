@@ -44,4 +44,38 @@ public record Result(String commandId, ResultStatus status, Reason reason, JsonO
 
     public record RejoinDetail(int attempt) {
     }
+
+    // ---- 第二阶段（任务单 9）----
+
+    /** goto / go_home：到达时离目标的距离。 */
+    public record GotoDetail(double distance) {
+    }
+
+    /** mine：实际拿到的数量（失败时也带，说明挖到一半卡住了）。 */
+    public record MineDetail(int mined) {
+    }
+
+    /** collect：捡到的总数。 */
+    public record CollectDetail(int picked) {
+    }
+
+    /** craft：合成出的数量。 */
+    public record CraftDetail(int crafted) {
+    }
+
+    /** place / pickup_block：方块的位置。 */
+    public record PlaceDetail(Pos pos) {
+    }
+
+    /** eat：吃的什么、吃完饥饿值。 */
+    public record EatDetail(String item, int foodAfter) {
+    }
+
+    /** sleep：是否真的睡着并跳过了夜晚。 */
+    public record SleepDetail(boolean slept) {
+    }
+
+    /** use_furnace：烧出来的数量。 */
+    public record UseFurnaceDetail(int smelted) {
+    }
 }
