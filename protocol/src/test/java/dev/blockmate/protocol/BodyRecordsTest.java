@@ -28,7 +28,11 @@ class BodyRecordsTest {
 
     @Test
     void snapshot可以说不知道() {
-        Snapshot justReconnected = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null);
+        Snapshot justReconnected = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null, null);
+        assertFalse(ProtocolCodec.gson().toJson(justReconnected).contains("ground_items"), "不知道就不输出");
+        Snapshot withGround = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null,
+                Map.of("minecraft:oak_log", 8));
+        assertTrue(ProtocolCodec.gson().toJson(withGround).contains("\"ground_items\":{\"minecraft:oak_log\":8}"));
         String json = ProtocolCodec.gson().toJson(justReconnected);
         Snapshot back = ProtocolCodec.gson().fromJson(json, Snapshot.class);
         assertTrue(back.inWorld());

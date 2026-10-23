@@ -33,6 +33,10 @@ public final class SnapshotSummary {
             sb.append("，饥饿 ").append(s.food()).append("/20");
         }
         sb.append("，背包：").append(inventory(s.inventory(), names)).append("。");
+        if (s.groundItems() != null) {
+            sb.append(s.groundItems().isEmpty() ? "地上 8 格内没有东西。"
+                    : "地上 8 格内有：" + inventory(s.groundItems(), names) + "。");
+        }
         if (s.owner() == null || !s.owner().visible()) {
             sb.append("没看到主人。");
         } else if (s.owner().distance() != null) {

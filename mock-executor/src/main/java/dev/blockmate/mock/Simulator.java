@@ -206,7 +206,7 @@ public final class Simulator {
         OwnerInfo owner = OwnerInfo.seen(4.24, new Pos(round(x + 3), y, round(z + 3)));
         TaskInfo info = task == null ? null : new TaskInfo(task.commandId(), task.name(), "running");
         send(MessageType.SNAPSHOT, new Snapshot(true, me, "minecraft:overworld", 20.0, 20,
-                new LinkedHashMap<>(inventory), owner, info));
+                new LinkedHashMap<>(inventory), owner, info, Map.of("minecraft:oak_log", 8)));
     }
 
     private void send(MessageType type, Object body) {

@@ -140,6 +140,7 @@ mock-executor 的 hello 与真模组相同，只是 `mod_version` 写 `mock`。
 | inventory | 物品 id → 数量，只列非零项；空背包是 `{}` |
 | owner | `visible:false` 表示没看到主人（不等于主人不在）；visible:true 时必有 distance 和 pos |
 | task | 当前任务槽；空闲时为 `null` |
+| ground_items | 伙伴 8 格内地上的掉落物，物品 id → 数量（2026-10-23 加）；`{}` 表示地上没东西，字段缺失/`null` 表示不知道（旧模组）。后台状态句写成"地上 8 格内有：橡木原木 8" |
 
 hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 原样塞进提示词。
 

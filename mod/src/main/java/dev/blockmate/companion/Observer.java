@@ -13,6 +13,7 @@ import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
@@ -171,9 +172,26 @@ public final class Observer {
 
     // ---------- 采集 ----------
 
+    /** 数地上物品的半径，和 pick_up 的默认半径一样。 */
+    static final double GROUND_RADIUS = 8.0;
+
     private Snapshot snapshot(Minecraft mc, LocalPlayer player, Map<String, Integer> inv) {
         return new Snapshot(true, pos(player), dim(mc), (double) player.getHealth(), player.getFoodData().getFoodLevel(),
-                inv, owner(mc, player), taskSupplier.get());
+                inv, owner(mc, player), taskSupplier.get(), groundItems(mc, player));
+    }
+
+    /** 8 格内地上的掉落物，物品 id → 数量（2026-10-23：之前模型看不见地上有什么，只能凭背包猜）。 */
+    static Map<String, Integer> groundItems(Minecraft mc, LocalPlayer me) {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        if (mc.level == null) {
+            return out;
+        }
+        for (ItemEntity e : mc.level.getEntitiesOfClass(ItemEntity.class, me.getBoundingBox().inflate(GROUND_RADIUS))) {
+            if (e.isAlive() && me.distanceTo(e) <= GROUND_RADIUS) {
+                addStack(out, e.getItem());
+            }
+        }
+        return out;
     }
 
     static Pos pos(Player p) {

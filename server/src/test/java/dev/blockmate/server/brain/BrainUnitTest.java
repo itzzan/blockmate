@@ -31,7 +31,7 @@ class BrainUnitTest {
     private static Snapshot full() {
         return new Snapshot(true, new Pos(120.5, 64.0, -33.2), "minecraft:overworld", 20.0, 18,
                 Map.of("minecraft:oak_log", 8, "minecraft:bread", 3), OwnerInfo.seen(4.2, new Pos(124, 64, -31)),
-                new TaskInfo("c1", CommandName.FOLLOW, "running"));
+                new TaskInfo("c1", CommandName.FOLLOW, "running"), Map.of("minecraft:oak_log", 16));
     }
 
     @Test
@@ -55,11 +55,16 @@ class BrainUnitTest {
 
     @Test
     void 看不到主人和离线的说法() {
-        Snapshot unknown = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null);
+        Snapshot unknown = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null, null);
         String s = SnapshotSummary.describe(unknown, true, NAMES);
         assertTrue(s.contains("没看到主人"), s);
         assertTrue(s.contains("背包：空"), s);
         assertTrue(s.contains("现在没有任务"), s);
+        assertFalse(s.contains("地上"), "地上物品不知道就不提：" + s);
+        String g = SnapshotSummary.describe(full(), true, NAMES);
+        assertTrue(g.contains("地上 8 格内有：橡木原木 16"), g);
+        Snapshot empty = new Snapshot(true, null, null, null, null, Map.of(), OwnerInfo.unknown(), null, Map.of());
+        assertTrue(SnapshotSummary.describe(empty, true, NAMES).contains("地上 8 格内没有东西"));
         assertEquals("你现在不在游戏里。", SnapshotSummary.describe(full(), false, NAMES));
         assertTrue(SnapshotSummary.describe(Snapshot.offline(), true, NAMES).contains("没进入服务器"));
     }
