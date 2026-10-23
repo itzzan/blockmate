@@ -35,6 +35,7 @@ import dev.blockmate.server.brain.Tools;
 import dev.blockmate.server.gateway.ModelException;
 import dev.blockmate.server.gateway.ModelReply;
 import dev.blockmate.server.gateway.ToolCall;
+import dev.blockmate.server.memory.Episode;
 import dev.blockmate.server.memory.Memory;
 import dev.blockmate.server.memory.Preference;
 import dev.blockmate.server.memory.StoredEvent;
@@ -684,6 +685,23 @@ public final class Hub {
 
     public void writeDailyEpisode() {
         writeEpisodeFor(LocalDate.now());
+    }
+
+    /**
+     * 启动后补写昨天的日记（2026-10-23）：23:55 那次可能超时失败、或后台当时没开、或当天的日记是伙伴中途掉线时写的半截
+     * （created_ts 早于当天结束）、或之后删过消息（设置表里有 episode_stale:日期）。满足任一条就重写一遍。
+     */
+    public void catchUpEpisodes() {
+        LocalDate yesterday = LocalDate.now().minusDays(1);
+        long dayEnd = yesterday.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        String day = yesterday.toString();
+        Optional<Episode> existing = memory.episodeForDay(day);
+        boolean stale = memory.setting("episode_stale:" + day).isPresent();
+        if (existing.isEmpty() || existing.get().createdTs() < dayEnd || stale) {
+            log.info("episode catch-up day={} reason={}", day,
+                    existing.isEmpty() ? "missing" : stale ? "stale" : "written_before_day_end");
+            writeEpisodeFor(yesterday);
+        }
     }
 
     private void maybeWriteEpisodeOnOffline() {

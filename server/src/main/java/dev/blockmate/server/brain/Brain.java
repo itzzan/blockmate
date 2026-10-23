@@ -15,6 +15,7 @@ import dev.blockmate.server.memory.StoredMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -23,6 +24,9 @@ import java.util.function.Consumer;
 public final class Brain {
 
     private static final Logger log = LoggerFactory.getLogger(Brain.class);
+    /** 写日记这一次调用的超时（2026-10-23：23:55 的日记用 30 秒的聊天超时等不到首字）。 */
+    static final Duration EPISODE_FIRST_TOKEN = Duration.ofSeconds(120);
+    static final Duration EPISODE_TOTAL = Duration.ofSeconds(240);
 
     private final ModelClient client;
     private final String model;
@@ -82,17 +86,15 @@ public final class Brain {
             sb.append(who).append("：").append(m.text().strip()).append('\n');
         }
         sb.append('\n');
-        for (StoredEvent e : events) {
-            sb.append("事件 ").append(e.kind());
-            if (e.commandId() != null) {
-                sb.append("（任务 ").append(e.commandId(), 0, Math.min(8, e.commandId().length())).append("）");
-            }
-            sb.append('\n');
+        String digest = EpisodeDigest.describe(events);
+        if (!digest.isBlank()) {
+            sb.append("游戏里发生的事（按动作统计）：\n").append(digest).append('\n');
         }
         List<ChatMessage> prompt = new ArrayList<>();
         prompt.add(ChatMessage.system(persona.text()));
         prompt.add(ChatMessage.user(sb.toString()));
-        ModelReply reply = client.chat(new ChatRequest(model, prompt, null), chunk -> { });
+        // 日记的提示比平时长得多（一天的对话 + 事件），冷缓存下首字要等很久，用单独的长超时
+        ModelReply reply = client.chat(new ChatRequest(model, prompt, null), chunk -> { }, EPISODE_FIRST_TOKEN, EPISODE_TOTAL);
         log.info("episode day={} text_len={}", day, reply.text().length());
         return reply.text().strip();
     }

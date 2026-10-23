@@ -76,6 +76,7 @@ public final class ServerApp {
 
         hubExec.scheduleAtFixedRate(hub::tick, 500, 500, TimeUnit.MILLISECONDS);
         MaintenanceScheduler.schedule(hubExec, cfg.episodeTime, hub::writeDailyEpisode, "episode");
+        hubExec.schedule(hub::catchUpEpisodes, 45, TimeUnit.SECONDS); // 启动后补写昨天的日记（失败/半截/删过消息时）
         MaintenanceScheduler.schedule(hubExec, cfg.backupTime, () -> hub.backup(cfg.dataDir.resolve("backup"), 14), "backup");
         if (cfg.rcon != null) {
             // 自动上下线（手册 7.2 可选项）：单独线程查 RCON，不占 hub 线程；密码每次从文件读，换了不用重启

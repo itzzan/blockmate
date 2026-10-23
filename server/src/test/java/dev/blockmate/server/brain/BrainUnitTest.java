@@ -12,6 +12,7 @@ import dev.blockmate.protocol.Snapshot;
 import dev.blockmate.protocol.TaskInfo;
 import dev.blockmate.server.gateway.ChatMessage;
 import dev.blockmate.server.memory.Episode;
+import dev.blockmate.server.memory.StoredEvent;
 import dev.blockmate.server.memory.StoredMessage;
 import org.junit.jupiter.api.Test;
 
@@ -89,6 +90,29 @@ class BrainUnitTest {
         String lastInternal = internal.get(internal.size() - 1).content();
         assertTrue(lastInternal.startsWith("现在的状态："), lastInternal);
         assertTrue(lastInternal.endsWith("\n\n[系统] 说一句"), "内部提示不加\"主人说\"：" + lastInternal);
+    }
+
+    @Test
+    void 日记里的事件按动作汇总() {
+        List<StoredEvent> ev = List.of(
+                new StoredEvent("e1", 1, "command", "c1", null, "{\"name\":\"follow\"}"),
+                new StoredEvent("e2", 2, "result", "c1", null, "{\"command_id\":\"c1\",\"status\":\"cancelled\"}"),
+                new StoredEvent("e3", 3, "command", "c2", null, "{\"name\":\"pick_up\"}"),
+                new StoredEvent("e4", 4, "result", "c2", null, "{\"command_id\":\"c2\",\"status\":\"ok\"}"),
+                new StoredEvent("e5", 5, "command", "c3", null, "{\"name\":\"deliver\"}"),
+                new StoredEvent("e6", 6, "result", "c3", null, "{\"command_id\":\"c3\",\"status\":\"failed\",\"reason\":\"target_lost\"}"),
+                new StoredEvent("e7", 7, "death", null, null, "{}"),
+                new StoredEvent("e8", 8, "death", null, null, "{}"),
+                new StoredEvent("e9", 9, "progress", "c2", null, "{}"),
+                new StoredEvent("e10", 10, "executor_online", null, null, "{}"));
+        String d = EpisodeDigest.describe(ev);
+        assertTrue(d.contains("跟随：主人让我做了 1 次，中途换成别的事 1 次"), d);
+        assertTrue(d.contains("捡东西：主人让我做了 1 次，做成 1 次") || d.contains("捡起：主人让我做了 1 次，做成 1 次"), d);
+        assertTrue(d.contains("主人让我做了 1 次，没做成 1 次"), d);
+        assertTrue(d.contains("我死了 2 次"), d);
+        assertTrue(d.contains("我进了 1 次游戏"), d);
+        assertFalse(d.contains("progress"), d);
+        assertEquals("", EpisodeDigest.describe(List.of()));
     }
 
     @Test

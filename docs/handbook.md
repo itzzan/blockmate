@@ -299,7 +299,7 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
 
 ## 11. Memory：SQLite 表
 
-【手册】表 `messages / events / preferences(pending/active) / episodes`，FTS5 全文索引；每天结束或伙伴下线时把当天 events 概括成一条 episode；下次对话开始时带最近 3 条；remember_preference 只写 pending，网页确认才 active；删除一条消息连带删掉派生条目；每天凌晨 VACUUM INTO 备份到 data/backup/，保留 14 份。
+【手册】表 `messages / events / preferences(pending/active) / episodes`，FTS5 全文索引；每天结束或伙伴下线时把当天 events 概括成一条 episode（2026-10-23 补充：写日记的提示里事件按动作名汇总为"跟随：主人让我做了 N 次，做成 N 次…"加死亡/被踢/进游戏次数，而不是裸的事件类型；这一次模型调用用 120 秒首字 / 240 秒总的长超时；hub 启动 45 秒后检查昨天的日记，缺失、写在当天结束之前、或之后删过消息（设置表 episode_stale:日期）就重写）；下次对话开始时带最近 3 条；remember_preference 只写 pending，网页确认才 active；删除一条消息连带删掉派生条目；每天凌晨 VACUUM INTO 备份到 data/backup/，保留 14 份。
 
 【细则】文件 `data/companion.db`，WAL 模式。
 

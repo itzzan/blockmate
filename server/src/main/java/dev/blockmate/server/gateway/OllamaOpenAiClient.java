@@ -53,6 +53,12 @@ public final class OllamaOpenAiClient implements ModelClient {
 
     @Override
     public ModelReply chat(ChatRequest request, Consumer<String> onChunk) throws ModelException {
+        return chat(request, onChunk, firstToken, total);
+    }
+
+    @Override
+    public ModelReply chat(ChatRequest request, Consumer<String> onChunk, Duration firstToken, Duration total)
+            throws ModelException {
         JsonObject body = buildBody(request);
         HttpRequest req = HttpRequest.newBuilder(endpoint)
                 .timeout(firstToken)
@@ -75,10 +81,14 @@ public final class OllamaOpenAiClient implements ModelClient {
             throw new ModelException(ModelException.Kind.BAD_RESPONSE,
                     "模型返回 HTTP " + resp.statusCode() + " " + OllamaNativeClient.headerSummary(resp));
         }
-        return readStream(resp.body(), start, onChunk);
+        return readStream(resp.body(), start, onChunk, total);
     }
 
     ModelReply readStream(InputStream in, long start, Consumer<String> onChunk) throws ModelException {
+        return readStream(in, start, onChunk, total);
+    }
+
+    ModelReply readStream(InputStream in, long start, Consumer<String> onChunk, Duration total) throws ModelException {
         StringBuilder text = new StringBuilder();
         Map<Integer, String[]> partial = new LinkedHashMap<>(); // index -> [id, name, argumentsSoFar]
         int promptTokens = 0;
