@@ -9,6 +9,7 @@ import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+import org.lwjgl.glfw.GLFW;
 
 /** 进入世界连后台，离开世界断开；收到的消息搬到游戏线程处理；每 tick 推进 executor。 */
 public final class ClientEvents {
@@ -18,6 +19,10 @@ public final class ClientEvents {
     private final Observer observer;
     private final Rejoiner rejoiner = new Rejoiner();
     private final AutoRespawn autoRespawn = new AutoRespawn(3_000);
+    /** 窗口不在前台时把帧率上限压到这个值（10-23：伙伴的窗口常年在后台，30 帧也吃 40% CPU）。 */
+    private static final int BACKGROUND_FPS = 10;
+    private Boolean windowActive;
+    private int savedFpsLimit = -1;
 
     public ClientEvents() {
         this.executor = new Executor(() -> link, this::reportStatus, rejoiner);
@@ -31,6 +36,7 @@ public final class ClientEvents {
 
     @SubscribeEvent
     public void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
+        ConfigWatcherFix.stopOnce();
         BaritoneBridge.applySettings();
         executor.attachBaritone();
         rejoiner.onJoined();
@@ -69,12 +75,37 @@ public final class ClientEvents {
             Minecraft mc = Minecraft.getInstance();
             executor.onTick(mc);
             rejoiner.tick(mc);
+            adjustFrameLimit(mc);
             if (autoRespawn.tick(mc.screen instanceof DeathScreen, System.currentTimeMillis()) && mc.player != null) {
                 // 和死亡画面上"重生"按钮做的事一样
                 CompanionMod.LOG.info(CompanionMod.TAG + "auto respawn");
                 mc.player.respawn();
                 mc.setScreen(null);
             }
+        }
+    }
+
+    /** 前台/后台切换时调帧率上限：后台 BACKGROUND_FPS，回前台恢复用户自己的设置。 */
+    private void adjustFrameLimit(Minecraft mc) {
+        // 不用 mc.isWindowActive()：窗口是 keeper 在后台拉起的，从没拿到过焦点时它一直是初始值 true。直接问 GLFW 当前焦点
+        boolean active = GLFW.glfwGetWindowAttrib(mc.getWindow().getWindow(), GLFW.GLFW_FOCUSED) == GLFW.GLFW_TRUE;
+        if (windowActive != null && windowActive == active) {
+            return;
+        }
+        if (windowActive == null) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "window focus at start: {}", active ? "active" : "inactive");
+        }
+        windowActive = active;
+        if (!active) {
+            savedFpsLimit = mc.options.framerateLimit().get();
+            if (savedFpsLimit > BACKGROUND_FPS) {
+                mc.options.framerateLimit().set(BACKGROUND_FPS);
+                CompanionMod.LOG.info(CompanionMod.TAG + "window inactive, fps limit {} -> {}", savedFpsLimit, BACKGROUND_FPS);
+            }
+        } else if (savedFpsLimit > 0) {
+            mc.options.framerateLimit().set(savedFpsLimit);
+            CompanionMod.LOG.info(CompanionMod.TAG + "window active, fps limit restored to {}", savedFpsLimit);
+            savedFpsLimit = -1;
         }
     }
 

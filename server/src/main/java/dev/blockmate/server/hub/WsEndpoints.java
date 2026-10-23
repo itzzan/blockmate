@@ -88,7 +88,7 @@ public final class WsEndpoints {
                     log.warn("auth_timeout role={}", role.wire());
                     c.close(CLOSE_UNAUTHORIZED, "hello timeout");
                 }
-            }, 3, TimeUnit.SECONDS);
+            }, 10, TimeUnit.SECONDS); // 10-23：Windows 浏览器首次打开偶发 3 秒内发不出 hello，放宽到 10 秒
         });
         ws.onMessage(ctx -> {
             Conn c = conns.get(ctx.sessionId());

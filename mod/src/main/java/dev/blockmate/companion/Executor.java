@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  */
 public final class Executor implements AbstractGameEventListener {
 
-    private static final int LOST_AFTER_TICKS = 200;      // 主人 10 秒不在视野
+    private static final int LOST_AFTER_TICKS = 160;      // 主人 8 秒不在视野（10-23 从 10 秒改短，让"10 秒内说跟丢"留出说话的时间）
     private static final double PROGRESS_STEP = 8.0;      // 距离每变化 8 格发 progress
     private static final int STUCK_WINDOW_TICKS = 100;    // 5 秒没动算卡住
     private static final double STUCK_MIN_MOVE = 0.1;
@@ -355,6 +355,10 @@ public final class Executor implements AbstractGameEventListener {
         Player owner = findOwner(mc);
         FollowWatch.Outcome o = t.follow.feed(owner != null, Observer.dim(mc), tick);
         if (o == FollowWatch.Outcome.TARGET_LOST) {
+            // 记一下主人是离开了服务器还是只是超出了实体同步范围，下次排"重进后认不出"时有据可查
+            boolean inTabList = mc.getConnection() != null && mc.getConnection().getOnlinePlayers().stream()
+                    .anyMatch(i -> ClientConfig.OWNER_NAME.get().equals(i.getProfile().getName()));
+            CompanionMod.LOG.info(CompanionMod.TAG + "follow: target lost, owner in tab list={} (false = 离开了服务器, true = 超出同步范围)", inTabList);
             BaritoneBridge.cancelEverything();
             finish(Result.failed(t.id, Reason.TARGET_LOST));
             return;
