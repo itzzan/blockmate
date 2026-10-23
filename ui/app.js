@@ -10,6 +10,7 @@
     conn: $('conn'), online: $('online'), task: $('task'), health: $('health'), dim: $('dim'), inv: $('inv'),
     model: $('model'), keeper: $('keeper'), keeperStart: $('keeper-start'), keeperStop: $('keeper-stop'),
     owner: $('owner'), auto: $('auto'), autoWrap: $('auto-wrap'),
+    plan: $('plan'), planGoal: $('plan-goal'), planOutcome: $('plan-outcome'), planSteps: $('plan-steps'),
     stop: $('stop'), chat: $('chat'), prefs: $('prefs'), prefsList: $('prefs-list'), prefsCount: $('prefs-count'),
     composer: $('composer'), input: $('input'), send: $('send'),
     tokenDialog: $('token-dialog'), tokenForm: $('token-form'), tokenInput: $('token-input'),
@@ -128,6 +129,32 @@
     } else { el.owner.hidden = true; }
   }
 
+  // ---------- 计划进度（任务单 10） ----------
+  const STEP_NAMES = { follow: '跟随', come_here: '过来', wait_here: '等在原地', stop: '停', pick_up: '捡东西', deliver: '交付',
+    report_status: '报状态', cancel: '取消', rejoin: '重连', goto: '去', mine: '挖', collect: '捡掉落物', craft: '合成',
+    place: '放方块', pickup_block: '收回方块', eat: '吃', sleep: '睡觉', go_home: '回家', remember_place: '记地点', use_furnace: '用熔炉' };
+  let planHideTimer = null;
+  function renderPlan(p) {
+    if (!p || !p.steps) { el.plan.hidden = true; return; }
+    el.planGoal.textContent = p.goal || '';
+    el.planSteps.innerHTML = '';
+    let running = false;
+    for (const s of p.steps) {
+      const li = document.createElement('li');
+      li.className = s.state || 'pending';
+      li.textContent = (s.index + 1) + ' ' + (STEP_NAMES[s.command] || s.command);
+      el.planSteps.appendChild(li);
+      if (s.state === 'running' || s.state === 'pending') running = true;
+    }
+    const states = p.steps.map(s => s.state);
+    el.planOutcome.textContent = states.some(x => x === 'running') ? '进行中'
+      : states.some(x => x === 'pending') ? '等待中'
+      : states.some(x => x === 'failed') ? '没做成' : states.every(x => x === 'done') ? '做完了' : '停了';
+    el.plan.hidden = false;
+    clearTimeout(planHideTimer);
+    if (!running) planHideTimer = setTimeout(() => { el.plan.hidden = true; }, 30000); // 结束后留 30 秒
+  }
+
   // ---------- 偏好 ----------
   function renderPrefs(items) {
     el.prefsList.innerHTML = '';
@@ -185,6 +212,7 @@
       case 'status': renderStatus(b); break;
       case 'notice': system(b.text || ''); break;
       case 'preferences': renderPrefs(b.items); break;
+      case 'plan': renderPlan(b); break;
       default: break;
     }
   }

@@ -3,6 +3,10 @@ package dev.blockmate.server.brain;
 import dev.blockmate.server.gateway.ChatMessage;
 import dev.blockmate.server.memory.Episode;
 import dev.blockmate.server.memory.StoredMessage;
+import java.time.format.DateTimeFormatter;
+import java.time.ZoneId;
+import java.time.Instant;
+import dev.blockmate.server.memory.StoredPlan;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,7 +45,27 @@ public final class PromptBuilder {
             }
             sb.append('\n');
         }
+        if (ctx.recentPlans() != null && !ctx.recentPlans().isEmpty()) {
+            sb.append("最近做过的任务（结局）：\n");
+            for (StoredPlan p : ctx.recentPlans()) {
+                sb.append("- ").append(DAY.format(Instant.ofEpochMilli(p.endedTs()))).append(' ')
+                        .append(p.goal().strip()).append('：').append(outcomeZh(p.outcome())).append('\n');
+            }
+            sb.append('\n');
+        }
         return sb.toString().strip();
+    }
+
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("M月d日").withZone(ZoneId.systemDefault());
+
+    static String outcomeZh(String outcome) {
+        return switch (outcome == null ? "" : outcome) {
+            case "done" -> "做成了";
+            case "failed" -> "没做成";
+            case "aborted" -> "中途停了";
+            case "timeout" -> "太久没做完";
+            default -> outcome == null ? "不清楚" : outcome;
+        };
     }
 
     /** 每轮都变的状态句，放在最后一条消息里。 */

@@ -40,6 +40,7 @@ import dev.blockmate.server.memory.Memory;
 import dev.blockmate.server.memory.Preference;
 import dev.blockmate.server.memory.StoredEvent;
 import dev.blockmate.server.memory.StoredMessage;
+import dev.blockmate.server.memory.StoredPlan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,6 +99,10 @@ public final class Hub {
     private int rconFailures;
     /** 给模型看的历史：分块滑动窗口（history_n 到 2×history_n 条），让提示前缀稳定、Ollama 缓存命中。 */
     private final HistoryWindow historyWindow;
+    /** 当前计划（任务单 10）：单个动作就是只有一步的计划；null = 没有。 */
+    private PlanRun plan;
+    /** 计划当前步对应的 command 信封 id。 */
+    private String planCommandId;
     private boolean modelOk = true;
     private long lastStatusPush;
     /** stop 命令的 id → 来源（button / model）。 */
@@ -220,7 +225,12 @@ public final class Hub {
         log.info("ack cmd_id={} accepted={} outcome={}", a.commandId(), a.accepted(), outcome);
         if (outcome == TaskSlot.AckOutcome.REJECTED) {
             CommandName name = nameOf(a.commandId());
-            say(name, Result.failed(a.commandId(), a.reason() == null ? dev.blockmate.protocol.Reason.REJECTED : a.reason()));
+            Result failed = Result.failed(a.commandId(), a.reason() == null ? dev.blockmate.protocol.Reason.REJECTED : a.reason());
+            if (a.commandId().equals(planCommandId)) {
+                onStepResult(failed);
+            } else {
+                say(name, failed);
+            }
         }
         pushStatus(true);
     }
@@ -250,7 +260,9 @@ public final class Hub {
             pushStatus(true);
             return;
         }
-        if (outcome == TaskSlot.ResultOutcome.FINISHED) {
+        if (r.commandId().equals(planCommandId)) {
+            onStepResult(r);
+        } else if (outcome == TaskSlot.ResultOutcome.FINISHED) {
             say(nameOf(r.commandId()), r);
         }
         if (outcome != TaskSlot.ResultOutcome.UNKNOWN) {
@@ -264,8 +276,186 @@ public final class Hub {
         memory.saveEvent("result", s.commandId(), s.sourceMessageId(), ProtocolCodec.toBody(r));
         log.info("result_synth cmd_id={} reason={}", s.commandId(), s.reason());
         commandNames.remove(s.commandId());
-        say(s.name(), r);
+        if (s.commandId().equals(planCommandId)) {
+            onStepResult(r);
+        } else {
+            say(s.name(), r);
+        }
         pushStatus(true);
+    }
+
+    // ---------------- 计划（任务单 10） ----------------
+
+    /** 开始一个计划；有在跑的旧计划就按 aborted 结束它（模组那边新命令会取消旧命令）。 */
+    public void startPlan(String goal, List<PlanRun.Step> steps, String sourceMessageId) {
+        if (plan != null && plan.running()) {
+            plan.abort(PlanRun.Outcome.ABORTED, now());
+            finishPlan();
+        }
+        plan = new PlanRun(UUID.randomUUID().toString(), goal == null ? "" : goal, steps, sourceMessageId, now());
+        log.info("plan_start plan_id={} steps={}", plan.planId(), steps.size());
+        dispatchNext();
+    }
+
+    public Optional<PlanRun> currentPlan() {
+        return Optional.ofNullable(plan);
+    }
+
+    /** 测试用：当前步的 command id。 */
+    public String planCommandIdForTest() {
+        return planCommandId;
+    }
+
+    private void dispatchNext() {
+        Optional<PlanRun.Step> next = plan.advance();
+        if (next.isEmpty()) {
+            if (plan.running()) {
+                plan.abort(PlanRun.Outcome.DONE, now());
+                finishPlan();
+            }
+            return;
+        }
+        PlanRun.Step step = next.get();
+        planCommandId = issueCommand(step.command(), step.args(), plan.sourceMessageId());
+        log.info("plan_step plan_id={} index={} command={} state=running", plan.planId(), step.index(), step.command().wire());
+        pushPlan();
+    }
+
+    /** 当前步的结果（真的或 hub 合成的）。 */
+    private void onStepResult(Result r) {
+        if (plan == null || !plan.running()) {
+            return; // 计划已停或已换，迟到的结果不管
+        }
+        PlanRun.Step step = plan.currentStep().orElse(null);
+        if (step == null) {
+            return;
+        }
+        if (r.status() == dev.blockmate.protocol.ResultStatus.CANCELLED) {
+            return; // 被 stop 或新计划替换，那边已经处理
+        }
+        planCommandId = null;
+        if (r.status() == dev.blockmate.protocol.ResultStatus.OK) {
+            boolean done = plan.stepDone(r);
+            log.info("plan_step plan_id={} index={} command={} state=done", plan.planId(), step.index(), step.command().wire());
+            if (done) {
+                finishPlan();
+                say(step.command(), r);
+            } else {
+                pushPlan();
+                dispatchNext();
+            }
+            return;
+        }
+        plan.stepFailed(r);
+        log.info("plan_step plan_id={} index={} command={} state=failed reason={}", plan.planId(), step.index(),
+                step.command().wire(), r.reason());
+        pushPlan();
+        if (plan.size() == 1) {
+            plan.abort(PlanRun.Outcome.FAILED, now());
+            finishPlan();
+            say(step.command(), r);
+            return;
+        }
+        String planId = plan.planId();
+        BrainContext ctx = context();
+        String goal = plan.goal();
+        int size = plan.size();
+        brainExec.execute(() -> {
+            Brain.PlanDecision d;
+            try {
+                d = brain.planFailure(goal, step.index(), size, step.command(), r, ctx);
+            } catch (ModelException ex) {
+                log.warn("model_fail kind={} msg={} (plan_failure)", ex.kind(), ex.getMessage());
+                d = Brain.PlanDecision.ABORT;
+            }
+            Brain.PlanDecision decision = d;
+            submit(() -> applyDecision(planId, step, r, decision));
+        });
+    }
+
+    private void applyDecision(String planId, PlanRun.Step step, Result r, Brain.PlanDecision decision) {
+        if (plan == null || !plan.planId().equals(planId) || !plan.running()) {
+            return;
+        }
+        switch (decision) {
+            case RETRY -> {
+                if (plan.retryCurrent()) {
+                    planCommandId = issueCommand(step.command(), step.args(), plan.sourceMessageId());
+                    log.info("plan_step plan_id={} index={} command={} state=running retry=1", planId, step.index(),
+                            step.command().wire());
+                    pushPlan();
+                    return;
+                }
+                abortPlan(PlanRun.Outcome.FAILED, step, r);
+            }
+            case SKIP -> {
+                plan.skipCurrent();
+                log.info("plan_step plan_id={} index={} command={} state=skipped", planId, step.index(), step.command().wire());
+                if (plan.advance().isPresent()) {
+                    // advance 已把下一步标成 running，这里退回去让 dispatchNext 正常派发
+                    plan.skipCurrent();
+                }
+                pushPlan();
+                abortIfNothingLeftElseDispatch(step, r);
+            }
+            default -> abortPlan(PlanRun.Outcome.FAILED, step, r);
+        }
+    }
+
+    private void abortIfNothingLeftElseDispatch(PlanRun.Step failedStep, Result r) {
+        // skipCurrent 之后：还有 pending 的步就派下一步，没有了就按失败结束
+        boolean anyPending = false;
+        for (int i = 0; i < plan.size(); i++) {
+            if (plan.state(i) == dev.blockmate.protocol.PlanStepState.PENDING) {
+                anyPending = true;
+                break;
+            }
+        }
+        if (anyPending) {
+            dispatchNext();
+        } else {
+            abortPlan(PlanRun.Outcome.FAILED, failedStep, r);
+        }
+    }
+
+    private void abortPlan(PlanRun.Outcome how, PlanRun.Step step, Result r) {
+        plan.abort(how, now());
+        finishPlan();
+        say(step.command(), r);
+    }
+
+    /** "停"或超时：当前计划按 aborted / timeout 结束，剩余步 skipped。 */
+    private void abortPlanOnStop(PlanRun.Outcome how) {
+        if (plan == null || !plan.running()) {
+            return;
+        }
+        boolean multi = plan.size() > 1;
+        plan.abort(how, now());
+        finishPlan();
+        if (multi) {
+            notice(how == PlanRun.Outcome.TIMEOUT ? "这件事做了太久，整个停掉了" : "这件事停了，剩下的步骤不做了", "info");
+        }
+    }
+
+    private void finishPlan() {
+        if (plan == null) {
+            return;
+        }
+        log.info("plan_end plan_id={} outcome={} steps={}", plan.planId(), plan.outcome().name().toLowerCase(), plan.size());
+        planCommandId = null;
+        boolean worthRemembering = plan.size() > 1 || (plan.steps().get(0).command() != CommandName.REPORT_STATUS
+                && plan.steps().get(0).command() != CommandName.REMEMBER_PLACE);
+        if (worthRemembering) {
+            memory.savePlan(new StoredPlan(plan.planId(), plan.goal(), plan.stepsJson(), plan.outcome().name().toLowerCase(),
+                    plan.startedAt(), plan.endedAt() > 0 ? plan.endedAt() : now(), plan.sourceMessageId()));
+        }
+        pushPlan();
+    }
+
+    private void pushPlan() {
+        if (plan != null) {
+            broadcast(envelope(MessageType.PLAN, Peer.UI, plan.toProtocol()));
+        }
     }
 
     // ---------------- /ws/ui ----------------
@@ -276,6 +466,9 @@ public final class Hub {
                 new HelloOk(true, now(), ProtocolCodec.VERSION, null, status(), historyJson(), null)));
         log.info("ui connected count={}", uis.size());
         pushPreferences(s);
+        if (plan != null && plan.running()) {
+            s.send(envelope(MessageType.PLAN, Peer.UI, plan.toProtocol()));
+        }
     }
 
     public void uiDisconnected(Sender s) {
@@ -353,7 +546,12 @@ public final class Hub {
                     log.info("action_while_offline name={}", name.wire());
                     continue;
                 }
-                issueCommand(name, tc.arguments(), src.id());
+                if (name == CommandName.STOP) {
+                    abortPlanOnStop(PlanRun.Outcome.ABORTED);
+                    issueCommand(name, tc.arguments(), src.id());
+                } else {
+                    startPlan(src.text(), List.of(new PlanRun.Step(0, name, tc.arguments())), src.id());
+                }
                 actionIssued = true;
             } else {
                 log.warn("unknown tool {}", tc.name());
@@ -379,7 +577,7 @@ public final class Hub {
         pushStatus(true);
     }
 
-    private void issueCommand(CommandName name, JsonObject args, String sourceMessageId) {
+    private String issueCommand(CommandName name, JsonObject args, String sourceMessageId) {
         Envelope cmd = envelope(MessageType.COMMAND, Peer.MC, new Command(name, args == null ? new JsonObject() : args));
         commandNames.put(cmd.id(), name);
         if (sourceMessageId != null) {
@@ -394,11 +592,13 @@ public final class Hub {
         mc.send(cmd);
         memory.saveEvent("command", cmd.id(), sourceMessageId, obj("name", name.wire()));
         log.info("command name={} cmd_id={}", name.wire(), cmd.id());
+        return cmd.id();
     }
 
     private void onStopButton() {
         log.info("stop_button");
         memory.saveEvent("stop_button", null, null, null);
+        abortPlanOnStop(PlanRun.Outcome.ABORTED);
         if (mc == null) {
             notice("伙伴不在线，没什么可停的", "info");
             return;
@@ -578,6 +778,18 @@ public final class Hub {
         for (TaskSlot.Synth s : slot.check(now)) {
             handleSynth(s);
         }
+        if (plan != null && plan.running() && now - plan.startedAt() > cfg.timeouts.planS() * 1000L) {
+            log.info("plan_timeout plan_id={}", plan.planId());
+            if (mc != null && plan.currentStep().isPresent()) {
+                Envelope cmd = envelope(MessageType.COMMAND, Peer.MC, Command.of(CommandName.STOP));
+                commandNames.put(cmd.id(), CommandName.STOP);
+                stopCommands.put(cmd.id(), "button");
+                slot.onStopIssued(now);
+                mc.send(cmd);
+                memory.saveEvent("command", cmd.id(), null, obj("name", "stop"));
+            }
+            abortPlanOnStop(PlanRun.Outcome.TIMEOUT);
+        }
         if (now - lastStatusPush >= STATUS_INTERVAL_MS) {
             pushStatus(true);
         }
@@ -678,7 +890,7 @@ public final class Hub {
     private BrainContext context() {
         List<String> prefs = memory.preferences("active").stream().map(Preference::text).toList();
         return new BrainContext(lastSnapshot, mcOnline, prefs, memory.recentEpisodes(3),
-                historyWindow.select(memory.recentMessages(cfg.historyN * 2)));
+                historyWindow.select(memory.recentMessages(cfg.historyN * 2)), memory.recentPlans(5));
     }
 
     // ---------------- 日记与备份 ----------------

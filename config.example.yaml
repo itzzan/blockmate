@@ -23,6 +23,7 @@ timeouts_s:                     # 任务超时（细则第 8 节）；follow 没
   deliver: 90
   stop: 5
   rejoin: 60
+  plan: 900                     # 一个多步计划的总时长（任务单 10），到了就整个停掉
 
 episode_time: "23:55"           # 每天几点把当天的事写成一条日记
 backup_time: "03:30"            # 每天几点 VACUUM INTO 备份，保留 14 份

@@ -95,6 +95,12 @@ public final class Memory implements AutoCloseable {
               INSERT INTO episodes_fts(rowid, summary) VALUES (new.rowid, new.summary); END""",
             // 细则之外的小表：keeper 的期望状态、日记是否需要重算等
             "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            // 任务单 10：计划（多步任务）的记录，结束时写一行；给第三阶段的"学习"留材料
+            """
+            CREATE TABLE IF NOT EXISTS plans (
+              id TEXT PRIMARY KEY, goal TEXT NOT NULL, steps_json TEXT NOT NULL, outcome TEXT NOT NULL,
+              started_ts INTEGER NOT NULL, ended_ts INTEGER NOT NULL, source_message_id TEXT)""",
+            "CREATE INDEX IF NOT EXISTS plans_ended ON plans(ended_ts)",
         };
         try (Statement st = conn.createStatement()) {
             for (String sql : ddl) {
@@ -370,6 +376,46 @@ public final class Memory implements AutoCloseable {
     }
 
     /** 最近 n 天的日记，按日期从早到晚。 */
+    // ---------- plans（任务单 10） ----------
+
+    public StoredPlan savePlan(StoredPlan plan) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT OR REPLACE INTO plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id) "
+                        + "VALUES (?,?,?,?,?,?,?)")) {
+            ps.setString(1, plan.id());
+            ps.setString(2, plan.goal());
+            ps.setString(3, plan.stepsJson());
+            ps.setString(4, plan.outcome());
+            ps.setLong(5, plan.startedTs());
+            ps.setLong(6, plan.endedTs());
+            ps.setString(7, plan.sourceMessageId());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return plan;
+    }
+
+    /** 最近 n 个计划，按结束时间从旧到新。 */
+    public List<StoredPlan> recentPlans(int n) {
+        List<StoredPlan> out = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id FROM plans "
+                        + "ORDER BY ended_ts DESC LIMIT ?")) {
+            ps.setInt(1, n);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new StoredPlan(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                            rs.getLong(5), rs.getLong(6), rs.getString(7)));
+                }
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        Collections.reverse(out);
+        return out;
+    }
+
     public List<Episode> recentEpisodes(int n) {
         List<Episode> out = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(

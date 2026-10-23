@@ -65,6 +65,32 @@ public final class Brain {
         return reply;
     }
 
+    /** 计划里一步失败后问脑子怎么办（任务单 10；任务单 11 再细化）。 */
+    public enum PlanDecision { ABORT, SKIP, RETRY }
+
+    public PlanDecision planFailure(String goal, int stepIndex, int stepCount, CommandName step, Result result,
+                                    BrainContext ctx) throws ModelException {
+        String prompt = "[系统] 你在做「" + goal + "」这件事，一共 " + stepCount + " 步，第 " + (stepIndex + 1) + " 步「"
+                + SnapshotSummary.taskName(step) + "」没做成：" + describeResult(step, result)
+                + "。接下来怎么办？只回一个词：放弃（整件事不做了）、跳过（这一步不做，做下一步）、重试（再试一次这一步）。";
+        List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, prompt, false);
+        ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.chatOnly()), chunk -> { });
+        PlanDecision d = parseDecision(reply.text());
+        log.info("plan_failure step={}/{} command={} decision={}", stepIndex + 1, stepCount, step.wire(), d);
+        return d;
+    }
+
+    static PlanDecision parseDecision(String text) {
+        String t = text == null ? "" : text;
+        if (t.contains("重试")) {
+            return PlanDecision.RETRY;
+        }
+        if (t.contains("跳过")) {
+            return PlanDecision.SKIP;
+        }
+        return PlanDecision.ABORT;
+    }
+
     /** 把一天的事概括成一段日记（手册 5.5 第 5 条）。不带工具。 */
     public String writeEpisode(String day, List<StoredEvent> events, List<StoredMessage> messages)
             throws ModelException {

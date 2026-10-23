@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** 细则第 8 节的状态机。 */
 class TaskSlotTest {
 
-    private final TaskSlot slot = new TaskSlot(new Config.Timeouts(3, 90, 45, 90, 5, 60));
+    private final TaskSlot slot = new TaskSlot(new Config.Timeouts(3, 90, 45, 90, 5, 60, 900));
 
     @Test
     void 正常流程_pending_running_idle() {

@@ -275,6 +275,8 @@ detail 按命令不同：
 
 【手册】同一时刻只有一个进行中的任务；新任务替换旧任务时，旧任务要收到自己的 cancelled 结果。
 
+【任务单 10】任务槽之上多了一层"计划"（PlanRun）：同一时刻只有一个计划，单个动作就是只有一步的计划。hub 把当前步派给模组（走下面的单任务槽状态机），result ok 就派下一步，最后一步 ok 计划结束为 done；一步失败（failed / hub 合成的 timeout 等 / ack rejected）时：只有一步的计划直接结束为 failed；多步的问 Brain（"放弃 / 跳过 / 重试"，重试最多一次，模型答不上来算放弃）。"停"（网页按钮或模型的 stop 工具）：当前步照旧发 stop 命令，剩余步全部 skipped，计划结束为 aborted；整个计划超过 `timeouts_s.plan`（默认 900 秒）结束为 timeout。每步状态变化 hub 向网页广播一条 plan 消息；计划结束时写进 plans 表；INFO 日志 `plan_start / plan_step index= command= state= / plan_end outcome=`，不含目标原话。新计划到来时旧计划按 aborted 结束。
+
 【细则】
 
 ```
@@ -382,6 +384,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 写 episode 的时机：本地时间每天 23:55，或伙伴从在线变离线且当天还没写过；输入是当天的 events（去掉 progress 和 model_call）和 messages 的摘要，调一次模型，不带工具。同一天第二次触发就覆盖当天那条。
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
+- 最近的任务（任务单 10）：表 `plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id)`，计划结束时写一行；给模型的 system 里带最近 5 个的"日期 目标：结局"。
 - 最近 N 条对话：按 ts 倒序取最近 2N 条未删除的 messages，再经 HistoryWindow 做分块滑动：窗口在 N 到 2N 条之间，满 2N 条时一次砍回 N 条，而不是每轮掉一条，这样提示前缀只在每 N 条消息变一次（N 来自 config.history_n，默认 20）。网页 hello 回复里带的 history 仍是最近 N 条。
 
 ## 12. config.yaml 与 persona.md
@@ -462,6 +465,7 @@ keeper_status：
 - `preferences`：`{"items": [{"id": "…", "text": "…", "ts": …}]}`。
 - `preference_action`：`{"id": "…", "action": "confirm" | "ignore"}`。
 - `keeper_control`：`{"action": "start" | "stop" | "auto_on" | "auto_off"}`。
+- `plan`（hub → ui，任务单 10）：`{"plan_id", "goal", "steps": [{"index", "command", "args", "state"}], "current"}`，每步变化整条重发；网页在聊天区上方画成一排步骤标签，结束 30 秒后隐藏。
 - `notice`：`{"text": "我现在不在游戏里", "level": "info" | "warn"}`。
 
 网页的 token 存在 localStorage（键 `companion_token`），断线按 1/2/4/…/15 秒退避重连，状态条显示"重连中"。

@@ -6,6 +6,9 @@ import dev.blockmate.mock.Simulator;
 import dev.blockmate.mock.WsClient;
 import dev.blockmate.protocol.Chat;
 import dev.blockmate.protocol.Envelope;
+import dev.blockmate.protocol.Result;
+import dev.blockmate.protocol.CommandName;
+import dev.blockmate.protocol.Command;
 import dev.blockmate.protocol.Hello;
 import dev.blockmate.protocol.HelloOk;
 import dev.blockmate.protocol.MessageType;
@@ -42,6 +45,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -62,6 +66,8 @@ class HubIntegrationTest {
     /** 剧本式的假模型：看最后一句话决定回文字还是工具调用。 */
     static final class FakeModel implements ModelClient {
         final List<ChatRequest> requests = Collections.synchronizedList(new ArrayList<>());
+        /** 计划里一步失败时假模型的回答（任务单 10）。 */
+        volatile String planDecision = "放弃";
 
         @Override
         public ModelReply chat(ChatRequest req, Consumer<String> onChunk) {
@@ -85,6 +91,9 @@ class HubIntegrationTest {
                 onChunk.accept("你好呀，");
                 onChunk.accept("我是 Blockmate。");
                 return new ModelReply("你好呀，我是 Blockmate。", List.of(), 1, 1, 1);
+            }
+            if (last.contains("接下来怎么办？只回一个词")) {
+                return new ModelReply(planDecision, List.of(), 1, 1, 1);
             }
             String t = last.contains("身体没反应") ? "没反应啊，身体不听使唤。" : last.contains("结束了：失败") ? "没做成。" : "来了来了。";
             onChunk.accept(t);
@@ -350,5 +359,113 @@ class HubIntegrationTest {
         waitFor(() -> model.requests.size() == before + 1, 5000, "结束后说一句");
         ChatRequest say = model.requests.get(model.requests.size() - 1);
         assertTrue(say.tools() == null || say.tools().size() <= 1, "说一句的请求不带动作工具");
+    }
+
+    private static PlanRun.Step step(int i, CommandName name, Object args) {
+        return new PlanRun.Step(i, name, args == null ? new JsonObject() : ProtocolCodec.toBody(args));
+    }
+
+    private Envelope planMessage(UiClient ui, java.util.function.Predicate<dev.blockmate.protocol.Plan> until, long timeoutMs)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        Envelope last = null;
+        while (System.currentTimeMillis() < deadline) {
+            Envelope e = ui.next(MessageType.PLAN, Math.max(1, deadline - System.currentTimeMillis()));
+            if (e == null) {
+                break;
+            }
+            last = e;
+            if (until.test(ProtocolCodec.bodyAs(e, dev.blockmate.protocol.Plan.class))) {
+                return e;
+            }
+        }
+        return last;
+    }
+
+    @Test
+    void 三步计划顺序执行() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        app.hub().submit(() -> app.hub().startPlan("去弄木头", List.of(
+                step(0, CommandName.COME_HERE, null),
+                step(1, CommandName.PICK_UP, new Command.PickUpArgs("minecraft:oak_log", 8)),
+                step(2, CommandName.DELIVER, new Command.DeliverArgs("minecraft:oak_log", 8, null))), null));
+        Envelope done = planMessage(ui, p -> p.steps().stream().allMatch(st -> st.state() == dev.blockmate.protocol.PlanStepState.DONE), 15000);
+        assertNotNull(done, "应收到计划全部完成的 plan 消息");
+        dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(done, dev.blockmate.protocol.Plan.class);
+        assertEquals(3, p.steps().size());
+        assertNull(p.current(), "结束后 current 为空");
+        List<String> order = mockConsole.stream().filter(l -> l.startsWith("收到 ")).map(l -> l.substring(3)).toList();
+        int a = order.indexOf("come_here"), b = order.indexOf("pick_up"), c = order.indexOf("deliver");
+        assertTrue(a >= 0 && b > a && c > b, "三步按顺序派给模组：" + order);
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 2000, "plan done");
+        assertEquals(1, memory().recentPlans(5).stream().filter(sp -> "done".equals(sp.outcome())).count(), "plans 表记了一条 done");
+    }
+
+    @Test
+    void 计划中途停_剩余步跳过() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        app.hub().submit(() -> app.hub().startPlan("跟着我然后捡木头", List.of(
+                step(0, CommandName.FOLLOW, null),
+                step(1, CommandName.PICK_UP, new Command.PickUpArgs("minecraft:oak_log", 8)),
+                step(2, CommandName.DELIVER, new Command.DeliverArgs("minecraft:oak_log", 8, null))), null));
+        waitFor(() -> mockConsole.contains("收到 follow"), 3000, "follow 派出");
+        ui.send(MessageType.STOP, new JsonObject());
+        Envelope aborted = planMessage(ui, p -> p.steps().get(2).state() == dev.blockmate.protocol.PlanStepState.SKIPPED, 5000);
+        assertNotNull(aborted);
+        dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(aborted, dev.blockmate.protocol.Plan.class);
+        assertEquals(dev.blockmate.protocol.PlanStepState.SKIPPED, p.steps().get(1).state());
+        assertEquals(dev.blockmate.protocol.PlanStepState.SKIPPED, p.steps().get(2).state());
+        waitFor(() -> mockConsole.contains("收到 stop"), 3000, "mock 收到 stop");
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.ABORTED).orElse(false), 2000, "aborted");
+        Thread.sleep(1500);
+        assertFalse(mockConsole.contains("收到 pick_up"), "停了以后不该再派下一步：" + mockConsole);
+    }
+
+    @Test
+    void 第二步失败_问脑子_脑子说放弃() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.planDecision = "放弃";
+        int before = model.requests.size();
+        app.hub().submit(() -> app.hub().startPlan("去弄木头", List.of(
+                step(0, CommandName.COME_HERE, null),
+                step(1, CommandName.GOTO, new Command.GotoArgs(null, null, null, "home")),
+                step(2, CommandName.DELIVER, new Command.DeliverArgs("minecraft:oak_log", 8, null))), null));
+        // mock 不认识 goto 以外的第二阶段命令？它对所有命令都 ack + 1 秒后 ok，所以用假模型的"不在世界里"路径不行；
+        // 让第二步失败：等它派出 goto 后，用 hub 合成的方式——这里直接让 mock 的下一步超时：把 ack 超时设得很短做不到，
+        // 所以改为在 mock 上下文外对第二步发一个 failed result（模拟模组报错）。
+        waitFor(() -> mockConsole.contains("收到 goto"), 8000, "第二步派出");
+        String cmdId = app.hub().currentPlan().flatMap(pr -> pr.currentStep()).map(st -> st.command().wire()).orElse("?");
+        assertEquals("goto", cmdId);
+        mocks.get(0).send(ProtocolCodec.envelope(MessageType.RESULT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                Result.failed(currentPlanCommandId(), dev.blockmate.protocol.Reason.NO_PLACE_KNOWN)));
+        Envelope ended = planMessage(ui, p -> p.steps().get(2).state() == dev.blockmate.protocol.PlanStepState.SKIPPED, 10000);
+        assertNotNull(ended, "脑子说放弃后剩余步 skipped");
+        dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(ended, dev.blockmate.protocol.Plan.class);
+        assertEquals(dev.blockmate.protocol.PlanStepState.FAILED, p.steps().get(1).state());
+        assertTrue(model.requests.stream().skip(before).anyMatch(req -> req.messages().get(req.messages().size() - 1).content()
+                .contains("接下来怎么办？只回一个词")), "Brain 被问到怎么办");
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.FAILED).orElse(false), 2000, "failed");
+    }
+
+    private String currentPlanCommandId() throws Exception {
+        java.util.concurrent.CompletableFuture<String> f = new java.util.concurrent.CompletableFuture<>();
+        app.hub().submit(() -> f.complete(app.hub().planCommandIdForTest()));
+        return f.get(2, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    private dev.blockmate.server.memory.Memory memory() {
+        return app.memory();
     }
 }

@@ -16,7 +16,8 @@ public final class Config {
     public record Ollama(String baseUrl, String model, String api, int firstTokenTimeoutS, int totalTimeoutS) {
     }
 
-    public record Timeouts(int ackS, int comeHereS, int pickUpS, int deliverS, int stopS, int rejoinS) {
+    /** planS 是整个多步计划的总时长（任务单 10，默认 15 分钟）。 */
+    public record Timeouts(int ackS, int comeHereS, int pickUpS, int deliverS, int stopS, int rejoinS, int planS) {
     }
 
     /** 服务器的 RCON（手册 7.2 可选的自动上下线用）。密码优先从 passwordFile 读（一行），否则用 password。 */
@@ -58,7 +59,7 @@ public final class Config {
                 str(o, "api", "native"), intOf(o, "first_token_timeout_s", 30), intOf(o, "total_timeout_s", 60));
         Map<String, Object> t = sub(m, "timeouts_s");
         this.timeouts = new Timeouts(intOf(t, "ack", 3), intOf(t, "come_here", 90), intOf(t, "pick_up", 45),
-                intOf(t, "deliver", 90), intOf(t, "stop", 5), intOf(t, "rejoin", 60));
+                intOf(t, "deliver", 90), intOf(t, "stop", 5), intOf(t, "rejoin", 60), intOf(t, "plan", 900));
         this.episodeTime = LocalTime.parse(str(m, "episode_time", "23:55"));
         this.backupTime = LocalTime.parse(str(m, "backup_time", "03:30"));
         this.logLevel = str(m, "log_level", "INFO");
