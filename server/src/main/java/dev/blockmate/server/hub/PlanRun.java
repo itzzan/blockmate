@@ -25,11 +25,13 @@ public final class PlanRun {
     private final String goal;
     private final String sourceMessageId;
     private final List<Step> steps;
-    private final PlanStepState[] states;
-    private final Result[] results;
+    private final List<PlanStepState> states;
+    private final List<Result> results;
     private final long startedAt;
     private int current = -1;
+    /** 整个计划的重试次数（任务单 11：最多 2 次）。 */
     private int retries;
+    public static final int MAX_RETRIES = 2;
     private Outcome outcome = Outcome.RUNNING;
     private long endedAt = -1;
 
@@ -40,10 +42,13 @@ public final class PlanRun {
         this.planId = planId;
         this.goal = goal;
         this.sourceMessageId = sourceMessageId;
-        this.steps = List.copyOf(steps);
-        this.states = new PlanStepState[steps.size()];
-        this.results = new Result[steps.size()];
-        java.util.Arrays.fill(states, PlanStepState.PENDING);
+        this.steps = new ArrayList<>(steps);
+        this.states = new ArrayList<>();
+        this.results = new ArrayList<>();
+        for (int i = 0; i < steps.size(); i++) {
+            states.add(PlanStepState.PENDING);
+            results.add(null);
+        }
         this.startedAt = now;
     }
 
@@ -80,30 +85,29 @@ public final class PlanRun {
     }
 
     public List<Step> steps() {
-        return steps;
+        return List.copyOf(steps);
     }
 
     public PlanStepState state(int index) {
-        return states[index];
+        return states.get(index);
     }
 
     public Result result(int index) {
-        return results[index];
+        return results.get(index);
     }
 
     /** 正在做的那一步；没有（刚建好或已结束）为空。 */
     public Optional<Step> currentStep() {
-        return current >= 0 && current < steps.size() && states[current] == PlanStepState.RUNNING
+        return current >= 0 && current < steps.size() && states.get(current) == PlanStepState.RUNNING
                 ? Optional.of(steps.get(current)) : Optional.empty();
     }
 
     /** 把下一步（第一个 pending）标成 running 并返回；没有了就返回空（调用方据此结束计划）。 */
     public Optional<Step> advance() {
         for (int i = Math.max(0, current); i < steps.size(); i++) {
-            if (states[i] == PlanStepState.PENDING) {
+            if (states.get(i) == PlanStepState.PENDING) {
                 current = i;
-                states[i] = PlanStepState.RUNNING;
-                retries = 0;
+                states.set(i, PlanStepState.RUNNING);
                 return Optional.of(steps.get(i));
             }
         }
@@ -115,8 +119,8 @@ public final class PlanRun {
         if (current < 0) {
             return false;
         }
-        states[current] = PlanStepState.DONE;
-        results[current] = r;
+        states.set(current, PlanStepState.DONE);
+        results.set(current, r);
         boolean allDone = true;
         for (PlanStepState s : states) {
             if (s == PlanStepState.PENDING || s == PlanStepState.RUNNING) {
@@ -133,33 +137,55 @@ public final class PlanRun {
     /** 当前步失败了，先记下来，怎么办由调用方（问脑子）决定。 */
     public void stepFailed(Result r) {
         if (current >= 0) {
-            states[current] = PlanStepState.FAILED;
-            results[current] = r;
+            states.set(current, PlanStepState.FAILED);
+            results.set(current, r);
         }
     }
 
     /** 失败处理之一：跳过这一步，接着做下一步（调用方随后 advance）。 */
     public void skipCurrent() {
         if (current >= 0) {
-            states[current] = PlanStepState.SKIPPED;
+            states.set(current, PlanStepState.SKIPPED);
         }
     }
 
-    /** 失败处理之二：再试一次（最多一次）。返回 false 表示已经试过了。 */
+    /** 失败处理之二：这一步再试一次；整个计划最多 MAX_RETRIES 次。返回 false 表示额度用完。 */
     public boolean retryCurrent() {
-        if (current < 0 || retries >= 1) {
+        if (current < 0 || retries >= MAX_RETRIES) {
             return false;
         }
         retries++;
-        states[current] = PlanStepState.RUNNING;
+        states.set(current, PlanStepState.RUNNING);
         return true;
+    }
+
+    public int retries() {
+        return retries;
+    }
+
+    /** 失败处理之三（任务单 11）：当前失败步之后的剩余步换成 newSteps（index 接着编）。 */
+    public void replan(List<Step> newSteps) {
+        if (current < 0) {
+            return;
+        }
+        while (steps.size() > current + 1) {
+            steps.remove(steps.size() - 1);
+            states.remove(states.size() - 1);
+            results.remove(results.size() - 1);
+        }
+        int idx = current + 1;
+        for (Step ns : newSteps) {
+            steps.add(new Step(idx++, ns.command(), ns.args()));
+            states.add(PlanStepState.PENDING);
+            results.add(null);
+        }
     }
 
     /** 失败处理之三 / stop / 超时：剩下没做的全部 skipped，计划结束。 */
     public void abort(Outcome how, long now) {
-        for (int i = 0; i < states.length; i++) {
-            if (states[i] == PlanStepState.PENDING || states[i] == PlanStepState.RUNNING) {
-                states[i] = PlanStepState.SKIPPED;
+        for (int i = 0; i < states.size(); i++) {
+            if (states.get(i) == PlanStepState.PENDING || states.get(i) == PlanStepState.RUNNING) {
+                states.set(i, PlanStepState.SKIPPED);
             }
         }
         end(how, now);
@@ -177,9 +203,9 @@ public final class PlanRun {
         List<Plan.Step> out = new ArrayList<>();
         for (int i = 0; i < steps.size(); i++) {
             Step s = steps.get(i);
-            out.add(new Plan.Step(s.index(), s.command(), s.args() == null ? new JsonObject() : s.args(), states[i]));
+            out.add(new Plan.Step(s.index(), s.command(), s.args() == null ? new JsonObject() : s.args(), states.get(i)));
         }
-        Integer cur = running() && current >= 0 && states[current] == PlanStepState.RUNNING ? current : null;
+        Integer cur = running() && current >= 0 && states.get(current) == PlanStepState.RUNNING ? current : null;
         return new Plan(planId, goal, out, cur);
     }
 
@@ -191,9 +217,9 @@ public final class PlanRun {
             o.addProperty("index", i);
             o.addProperty("command", steps.get(i).command().wire());
             o.add("args", steps.get(i).args() == null ? new JsonObject() : steps.get(i).args());
-            o.addProperty("state", states[i].wire());
-            if (results[i] != null && results[i].reason() != null) {
-                o.addProperty("reason", results[i].reason().wire());
+            o.addProperty("state", states.get(i).wire());
+            if (results.get(i) != null && results.get(i).reason() != null) {
+                o.addProperty("reason", results.get(i).reason().wire());
             }
             arr.add(o);
         }

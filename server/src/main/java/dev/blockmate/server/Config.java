@@ -34,6 +34,8 @@ public final class Config {
     public final String ownerName;
     public final String companionName;
     public final Path personaPath;
+    /** 知识层目录（任务单 11）：plan_examples.md 等，相对 config.yaml 所在目录。 */
+    public final Path knowledgeDir;
     public final Path dataDir;
     public final int historyN;
     public final Ollama ollama;
@@ -52,6 +54,7 @@ public final class Config {
         this.ownerName = str(m, "owner_name", "Steve");
         this.companionName = str(m, "companion_name", "Blockmate");
         this.personaPath = baseDir.resolve(str(m, "persona_path", "persona.md"));
+        this.knowledgeDir = baseDir.resolve(str(m, "knowledge_dir", "knowledge"));
         this.dataDir = baseDir.resolve(str(m, "data_dir", "data"));
         this.historyN = intOf(m, "history_n", 20);
         Map<String, Object> o = sub(m, "ollama");

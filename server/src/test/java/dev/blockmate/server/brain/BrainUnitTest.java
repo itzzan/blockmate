@@ -123,13 +123,27 @@ class BrainUnitTest {
     @Test
     void 工具定义() {
         JsonArray all = Tools.all();
-        assertEquals(8, all.size());
+        assertEquals(20, all.size());
         List<String> names = all.asList().stream()
                 .map(e -> ((JsonObject) e).getAsJsonObject("function").get("name").getAsString()).toList();
         assertEquals(List.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver", "report_status",
-                "remember_preference"), names);
+                "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place",
+                "use_furnace", "make_plan", "remember_preference"), names);
         JsonObject deliver = all.get(5).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         assertTrue(deliver.getAsJsonObject("properties").has("count"));
+        JsonObject mine = all.get(8).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        assertEquals(List.of("block", "count"), mine.getAsJsonArray("required").asList().stream().map(e -> e.getAsString()).sorted().toList(),
+                "mine 的 block/count 必填，radius 可不填");
+        JsonObject craft = all.get(10).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        assertEquals(List.of("item"), craft.getAsJsonArray("required").asList().stream().map(e -> e.getAsString()).toList(),
+                "craft 的 count 可不填");
+        JsonObject makePlan = all.get(18).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        JsonObject stepItem = makePlan.getAsJsonObject("properties").getAsJsonObject("steps").getAsJsonObject("items");
+        assertTrue(stepItem.getAsJsonObject("properties").getAsJsonObject("command").getAsJsonArray("enum").asList().stream()
+                .map(e -> e.getAsString()).toList().containsAll(List.of("mine", "deliver", "go_home")));
+        assertFalse(stepItem.getAsJsonObject("properties").getAsJsonObject("command").getAsJsonArray("enum").toString().contains("\"stop\""),
+                "stop 不能进计划");
+        assertEquals(1, Tools.planDecision().size());
         assertEquals(1, Tools.chatOnly().size());
         assertTrue(Tools.isAction("follow"));
         assertFalse(Tools.isAction("remember_preference"));

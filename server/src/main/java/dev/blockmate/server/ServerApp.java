@@ -2,6 +2,7 @@ package dev.blockmate.server;
 
 import dev.blockmate.server.brain.Brain;
 import dev.blockmate.server.brain.ItemNames;
+import dev.blockmate.server.brain.Knowledge;
 import dev.blockmate.server.brain.Persona;
 import dev.blockmate.server.gateway.ModelClient;
 import dev.blockmate.server.gateway.OllamaNativeClient;
@@ -60,7 +61,8 @@ public final class ServerApp {
         Memory memory = new Memory(cfg.dataDir.resolve("companion.db"));
         Persona persona = new Persona(cfg.personaPath, cfg.companionName, cfg.ownerName);
         ItemNames names = ItemNames.load();
-        Brain brain = new Brain(client, cfg.ollama.model(), persona, names, cfg.ownerName, cfg.companionName);
+        Brain brain = new Brain(client, cfg.ollama.model(), persona, new Knowledge(cfg.knowledgeDir), names, cfg.ownerName,
+                cfg.companionName);
 
         ScheduledExecutorService hubExec = Executors.newSingleThreadScheduledExecutor(r -> named(r, "hub"));
         ScheduledExecutorService brainExec = Executors.newSingleThreadScheduledExecutor(r -> named(r, "brain"));

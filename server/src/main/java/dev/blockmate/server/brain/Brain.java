@@ -1,5 +1,8 @@
 package dev.blockmate.server.brain;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import dev.blockmate.server.gateway.ToolCall;
 import dev.blockmate.protocol.CommandName;
 import dev.blockmate.protocol.DeliveryOutcome;
 import dev.blockmate.protocol.Reason;
@@ -35,11 +38,19 @@ public final class Brain {
     private final String ownerName;
     private final String companionName;
 
+    private final Knowledge knowledge;
+
     public Brain(ModelClient client, String model, Persona persona, ItemNames names, String ownerName,
                  String companionName) {
+        this(client, model, persona, Knowledge.empty(), names, ownerName, companionName);
+    }
+
+    public Brain(ModelClient client, String model, Persona persona, Knowledge knowledge, ItemNames names,
+                 String ownerName, String companionName) {
         this.client = client;
         this.model = model;
         this.persona = persona;
+        this.knowledge = knowledge == null ? Knowledge.empty() : knowledge;
         this.names = names;
         this.ownerName = ownerName;
         this.companionName = companionName;
@@ -47,7 +58,7 @@ public final class Brain {
 
     /** 决策请求：带全部工具。 */
     public ModelReply decide(String userText, BrainContext ctx, Consumer<String> onChunk) throws ModelException {
-        List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, userText);
+        List<ChatMessage> messages = PromptBuilder.build(persona.text(), knowledge.planExamples(), ctx, names, userText, true);
         ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.all()), onChunk);
         log.info("decide text_len={} tools={}", reply.text().length(), reply.toolCalls().size());
         return reply;
@@ -56,39 +67,66 @@ public final class Brain {
     /** 结果到达后的"说一句话"请求：不带动作工具（手册 5.5 第 3 条）。 */
     public ModelReply sayAfterResult(CommandName name, Result result, BrainContext ctx, Consumer<String> onChunk)
             throws ModelException {
-        String prompt = "[系统] 你刚才做的「" + SnapshotSummary.taskName(name) + "」结束了：" + describeResult(name, result)
+        return sayAfterResult(name, result, null, ctx, onChunk);
+    }
+
+    /** @param goal 不为空时表示多步计划全部做完，最后一步是 name（任务单 11） */
+    public ModelReply sayAfterResult(CommandName name, Result result, String goal, BrainContext ctx, Consumer<String> onChunk)
+            throws ModelException {
+        String head = goal == null || goal.isBlank()
+                ? "[系统] 你刚才做的「" + SnapshotSummary.taskName(name) + "」结束了："
+                : "[系统] 主人要的「" + goal + "」你全部做完了，最后一步「" + SnapshotSummary.taskName(name) + "」：";
+        String prompt = head + describeResult(name, result)
                 + "。用一两句话告诉主人，像平时说话那样，不要复述这段系统提示。"
                 + "如果上面写的是失败，就如实说没做成和原因，绝不能说成已经做好了。";
-        List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, prompt, false);
+        List<ChatMessage> messages = PromptBuilder.build(persona.text(), knowledge.planExamples(), ctx, names, prompt, false);
         ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.chatOnly()), onChunk);
         log.info("say_after_result name={} text_len={}", name.wire(), reply.text().length());
         return reply;
     }
 
-    /** 计划里一步失败后问脑子怎么办（任务单 10；任务单 11 再细化）。 */
-    public enum PlanDecision { ABORT, SKIP, RETRY }
+    /** 计划里一步失败后脑子的决定（任务单 11）：四选一，先说一句；replan 时带新的剩余步骤（hub 再校验）。 */
+    public record PlanDecision(String action, String say, JsonArray newSteps) {
+        public static final String RETRY = "retry";
+        public static final String SKIP = "skip";
+        public static final String REPLAN = "replan";
+        public static final String ABORT = "abort";
+    }
 
+    /**
+     * @param doneSummary 已完成的步，如"已做完：挖东西、过来"；没有就空串
+     */
     public PlanDecision planFailure(String goal, int stepIndex, int stepCount, CommandName step, Result result,
-                                    BrainContext ctx) throws ModelException {
+                                    String doneSummary, int retriesLeft, BrainContext ctx) throws ModelException {
         String prompt = "[系统] 你在做「" + goal + "」这件事，一共 " + stepCount + " 步，第 " + (stepIndex + 1) + " 步「"
-                + SnapshotSummary.taskName(step) + "」没做成：" + describeResult(step, result)
-                + "。接下来怎么办？只回一个词：放弃（整件事不做了）、跳过（这一步不做，做下一步）、重试（再试一次这一步）。";
-        List<ChatMessage> messages = PromptBuilder.build(persona.text(), ctx, names, prompt, false);
-        ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.chatOnly()), chunk -> { });
-        PlanDecision d = parseDecision(reply.text());
-        log.info("plan_failure step={}/{} command={} decision={}", stepIndex + 1, stepCount, step.wire(), d);
+                + SnapshotSummary.taskName(step) + "」没做成：" + describeResult(step, result) + "。"
+                + (doneSummary.isBlank() ? "" : doneSummary + "。")
+                + "剩余重试额度 " + retriesLeft + " 次。请调用 plan_decision 决定接下来怎么办（retry / skip / replan / abort），"
+                + "并在 say 里先对主人说一句你要怎么做，像平时说话那样。";
+        List<ChatMessage> messages = PromptBuilder.build(persona.text(), knowledge.planExamples(), ctx, names, prompt, false);
+        ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.planDecision()), chunk -> { });
+        PlanDecision d = parseDecision(reply);
+        log.info("plan_failure step={}/{} command={} decision={}", stepIndex + 1, stepCount, step.wire(), d.action());
         return d;
     }
 
-    static PlanDecision parseDecision(String text) {
-        String t = text == null ? "" : text;
-        if (t.contains("重试")) {
-            return PlanDecision.RETRY;
+    static PlanDecision parseDecision(ModelReply reply) {
+        for (ToolCall tc : reply.toolCalls()) {
+            if (Tools.PLAN_DECISION.equals(tc.name()) && tc.arguments() != null) {
+                JsonObject a = tc.arguments();
+                String action = a.has("action") && !a.get("action").isJsonNull() ? a.get("action").getAsString().strip().toLowerCase() : "";
+                if (!List.of(PlanDecision.RETRY, PlanDecision.SKIP, PlanDecision.REPLAN, PlanDecision.ABORT).contains(action)) {
+                    action = PlanDecision.ABORT;
+                }
+                String say = a.has("say") && !a.get("say").isJsonNull() ? a.get("say").getAsString().strip() : "";
+                JsonArray steps = a.has("new_steps") && a.get("new_steps").isJsonArray() ? a.getAsJsonArray("new_steps") : null;
+                return new PlanDecision(action, say, steps);
+            }
         }
-        if (t.contains("跳过")) {
-            return PlanDecision.SKIP;
-        }
-        return PlanDecision.ABORT;
+        // 没调工具：按文字里的词兜底，默认放弃
+        String t = reply.text() == null ? "" : reply.text();
+        String action = t.contains("重试") ? PlanDecision.RETRY : t.contains("跳过") ? PlanDecision.SKIP : PlanDecision.ABORT;
+        return new PlanDecision(action, t.strip(), null);
     }
 
     /** 把一天的事概括成一段日记（手册 5.5 第 5 条）。不带工具。 */

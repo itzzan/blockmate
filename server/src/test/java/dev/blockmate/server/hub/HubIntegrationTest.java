@@ -1,6 +1,8 @@
 package dev.blockmate.server.hub;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import dev.blockmate.mock.Options;
 import dev.blockmate.mock.Simulator;
 import dev.blockmate.mock.WsClient;
@@ -66,8 +68,13 @@ class HubIntegrationTest {
     /** 剧本式的假模型：看最后一句话决定回文字还是工具调用。 */
     static final class FakeModel implements ModelClient {
         final List<ChatRequest> requests = Collections.synchronizedList(new ArrayList<>());
-        /** 计划里一步失败时假模型的回答（任务单 10）。 */
-        volatile String planDecision = "放弃";
+        /** 计划里一步失败时假模型的决定（任务单 11：retry / skip / replan / abort）和那句话。 */
+        volatile String planDecision = "abort";
+        volatile String planSay = "这步不行，我先放下了。";
+        volatile JsonArray planNewSteps;
+        /** 听到"弄 20 根木头"时给的 make_plan 参数；重问时给 makePlanArgsRetry（null = 回文字不给计划）。 */
+        volatile JsonObject makePlanArgs;
+        volatile JsonObject makePlanArgsRetry;
 
         @Override
         public ModelReply chat(ChatRequest req, Consumer<String> onChunk) {
@@ -75,6 +82,17 @@ class HubIntegrationTest {
             String last = req.messages().get(req.messages().size() - 1).content();
             boolean decision = req.tools() != null && req.tools().size() > 1;
             if (decision) {
+                if (last.contains("弄 20 根木头")) {
+                    boolean reask = last.contains("上次给的计划有问题");
+                    JsonObject args = reask ? makePlanArgsRetry : makePlanArgs;
+                    if (args == null) {
+                        onChunk.accept("我不会。");
+                        return new ModelReply("我不会。", List.of(), 1, 1, 1);
+                    }
+                    String t = reask ? "再想想：我去砍树然后给你。" : "好嘞，我去砍树然后给你！";
+                    onChunk.accept(t);
+                    return new ModelReply(t, List.of(new ToolCall("mp", "make_plan", args)), 1, 1, 1);
+                }
                 if (last.contains("跟我来")) {
                     return new ModelReply("", List.of(new ToolCall("t1", "follow", new JsonObject())), 1, 1, 1);
                 }
@@ -92,8 +110,14 @@ class HubIntegrationTest {
                 onChunk.accept("我是 Blockmate。");
                 return new ModelReply("你好呀，我是 Blockmate。", List.of(), 1, 1, 1);
             }
-            if (last.contains("接下来怎么办？只回一个词")) {
-                return new ModelReply(planDecision, List.of(), 1, 1, 1);
+            if (last.contains("请调用 plan_decision")) {
+                JsonObject args = new JsonObject();
+                args.addProperty("action", planDecision);
+                args.addProperty("say", planSay);
+                if (planNewSteps != null) {
+                    args.add("new_steps", planNewSteps);
+                }
+                return new ModelReply("", List.of(new ToolCall("pd", "plan_decision", args)), 1, 1, 1);
             }
             String t = last.contains("身体没反应") ? "没反应啊，身体不听使唤。" : last.contains("结束了：失败") ? "没做成。" : "来了来了。";
             onChunk.accept(t);
@@ -263,7 +287,7 @@ class HubIntegrationTest {
         String lastMsg = decision.messages().get(decision.messages().size() - 1).content();
         assertTrue(lastMsg.contains("你在主世界"), "状态句在最后一条 user 里：" + lastMsg);
         assertFalse(decision.messages().get(0).content().contains("你在主世界"), "system 里不再有状态句");
-        assertEquals(8, decision.tools().size(), "决策请求带全部工具");
+        assertEquals(20, decision.tools().size(), "决策请求带全部工具");
 
         // c. 跟我来：假执行器打印"收到 follow"，3 秒后结果到达，网页收到"来了"
         ui.send(MessageType.CHAT, new Chat("跟我来"));
@@ -429,34 +453,188 @@ class HubIntegrationTest {
         assertFalse(mockConsole.contains("收到 pick_up"), "停了以后不该再派下一步：" + mockConsole);
     }
 
+    /** 起一个三步计划（过来 → 去 home → 交木头），等第二步派出后让它失败。 */
+    private void startPlanAndFailSecond(UiClient ui, dev.blockmate.protocol.Reason reason) throws Exception {
+        app.hub().submit(() -> app.hub().startPlan("去弄木头", List.of(
+                step(0, CommandName.COME_HERE, null),
+                step(1, CommandName.GOTO, new Command.GotoArgs(null, null, null, "home")),
+                step(2, CommandName.DELIVER, new Command.DeliverArgs("minecraft:oak_log", 8, null))), null));
+        waitFor(() -> mockConsole.contains("收到 goto"), 8000, "第二步派出");
+        String cmd = app.hub().currentPlan().flatMap(pr -> pr.currentStep()).map(st -> st.command().wire()).orElse("?");
+        assertEquals("goto", cmd);
+        mocks.get(0).send(ProtocolCodec.envelope(MessageType.RESULT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                Result.failed(currentPlanCommandId(), reason)));
+    }
+
+    private boolean askedPlanDecision(int from) {
+        return model.requests.stream().skip(from).anyMatch(req -> req.messages().get(req.messages().size() - 1).content()
+                .contains("请调用 plan_decision"));
+    }
+
+    private boolean companionSaid(String fragment) {
+        return memory().recentMessages(20).stream().anyMatch(m -> "companion".equals(m.role()) && m.text().contains(fragment));
+    }
+
+    private long count(String line) {
+        return mockConsole.stream().filter(line::equals).count();
+    }
+
     @Test
-    void 第二步失败_问脑子_脑子说放弃() throws Exception {
+    void 第二步失败_脑子说放弃() throws Exception {
         startApp();
         UiClient ui = UiClient.connect(app.port(), "t", "t");
         ui.next(MessageType.HELLO, 3000);
         startMock(false);
         waitFor(() -> app.hub().companionInWorld(), 5000, "online");
-        model.planDecision = "放弃";
+        model.planDecision = "abort";
+        model.planSay = "家在哪我不知道，这事先放下。";
         int before = model.requests.size();
-        app.hub().submit(() -> app.hub().startPlan("去弄木头", List.of(
-                step(0, CommandName.COME_HERE, null),
-                step(1, CommandName.GOTO, new Command.GotoArgs(null, null, null, "home")),
-                step(2, CommandName.DELIVER, new Command.DeliverArgs("minecraft:oak_log", 8, null))), null));
-        // mock 不认识 goto 以外的第二阶段命令？它对所有命令都 ack + 1 秒后 ok，所以用假模型的"不在世界里"路径不行；
-        // 让第二步失败：等它派出 goto 后，用 hub 合成的方式——这里直接让 mock 的下一步超时：把 ack 超时设得很短做不到，
-        // 所以改为在 mock 上下文外对第二步发一个 failed result（模拟模组报错）。
-        waitFor(() -> mockConsole.contains("收到 goto"), 8000, "第二步派出");
-        String cmdId = app.hub().currentPlan().flatMap(pr -> pr.currentStep()).map(st -> st.command().wire()).orElse("?");
-        assertEquals("goto", cmdId);
-        mocks.get(0).send(ProtocolCodec.envelope(MessageType.RESULT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
-                Result.failed(currentPlanCommandId(), dev.blockmate.protocol.Reason.NO_PLACE_KNOWN)));
+        startPlanAndFailSecond(ui, dev.blockmate.protocol.Reason.NO_PLACE_KNOWN);
         Envelope ended = planMessage(ui, p -> p.steps().get(2).state() == dev.blockmate.protocol.PlanStepState.SKIPPED, 10000);
         assertNotNull(ended, "脑子说放弃后剩余步 skipped");
         dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(ended, dev.blockmate.protocol.Plan.class);
         assertEquals(dev.blockmate.protocol.PlanStepState.FAILED, p.steps().get(1).state());
-        assertTrue(model.requests.stream().skip(before).anyMatch(req -> req.messages().get(req.messages().size() - 1).content()
-                .contains("接下来怎么办？只回一个词")), "Brain 被问到怎么办");
+        assertTrue(askedPlanDecision(before), "Brain 被问到怎么办");
         waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.FAILED).orElse(false), 2000, "failed");
+        waitFor(() -> companionSaid("这事先放下"), 3000, "先对主人说一句");
+        Thread.sleep(1200);
+        assertFalse(mockConsole.contains("收到 deliver"), "放弃后不该再派：" + mockConsole);
+    }
+
+    @Test
+    void 第二步失败_脑子说重试() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.planDecision = "retry";
+        model.planSay = "卡了一下，我再走一次。";
+        startPlanAndFailSecond(ui, dev.blockmate.protocol.Reason.STUCK);
+        waitFor(() -> count("收到 goto") == 2, 5000, "goto 再派一次");
+        waitFor(() -> companionSaid("再走一次"), 3000, "先对主人说一句");
+        Envelope done = planMessage(ui, p -> p.steps().stream().allMatch(st -> st.state() == dev.blockmate.protocol.PlanStepState.DONE), 15000);
+        assertNotNull(done, "重试成功后整个计划做完");
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 2000, "done");
+        assertEquals(1, app.hub().currentPlan().orElseThrow().retries());
+    }
+
+    @Test
+    void 第二步失败_脑子说跳过() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.planDecision = "skip";
+        model.planSay = "家找不到，直接把木头给你吧。";
+        startPlanAndFailSecond(ui, dev.blockmate.protocol.Reason.NO_PLACE_KNOWN);
+        waitFor(() -> mockConsole.contains("收到 deliver"), 5000, "跳过后派第三步");
+        waitFor(() -> companionSaid("直接把木头给你"), 3000, "先对主人说一句");
+        Envelope done = planMessage(ui, p -> p.steps().get(2).state() == dev.blockmate.protocol.PlanStepState.DONE, 15000);
+        assertNotNull(done);
+        dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(done, dev.blockmate.protocol.Plan.class);
+        assertEquals(dev.blockmate.protocol.PlanStepState.SKIPPED, p.steps().get(1).state());
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 2000, "done");
+        assertEquals(1, count("收到 goto"), "跳过不重派");
+    }
+
+    @Test
+    void 第二步失败_脑子重排剩余步骤() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.planDecision = "replan";
+        model.planSay = "家不认识，那我先捡木头再过去给你。";
+        model.planNewSteps = JsonParser.parseString("""
+                [{"command":"pick_up","args":{"item":"oak_log","count":8}},
+                 {"command":"deliver","args":{"item":"minecraft:oak_log","count":8}}]""").getAsJsonArray();
+        startPlanAndFailSecond(ui, dev.blockmate.protocol.Reason.NO_PLACE_KNOWN);
+        waitFor(() -> mockConsole.contains("收到 pick_up"), 5000, "重排后的第一步派出");
+        waitFor(() -> companionSaid("先捡木头"), 3000, "先对主人说一句");
+        Envelope done = planMessage(ui, p -> p.steps().size() == 4
+                && p.steps().get(3).state() == dev.blockmate.protocol.PlanStepState.DONE, 15000);
+        assertNotNull(done, "重排后 4 步做完");
+        dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(done, dev.blockmate.protocol.Plan.class);
+        assertEquals(dev.blockmate.protocol.PlanStepState.FAILED, p.steps().get(1).state());
+        assertEquals(CommandName.PICK_UP, p.steps().get(2).command());
+        assertEquals("minecraft:oak_log", p.steps().get(2).args().get("item").getAsString(), "重排的步骤也过校验（补命名空间）");
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 2000, "done");
+    }
+
+    private static JsonObject planArgs(String stepsJson) {
+        JsonObject o = new JsonObject();
+        o.addProperty("goal", "去弄 20 根木头回来");
+        o.add("steps", JsonParser.parseString(stepsJson));
+        return o;
+    }
+
+    @Test
+    void 模型用make_plan给合法计划() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.makePlanArgs = planArgs("""
+                [{"command":"mine","args":{"block":"oak_log","count":20},"why":"砍"},
+                 {"command":"deliver","args":{"item":"oak_log","count":20},"why":"交"}]""");
+        ui.send(MessageType.CHAT, new Chat("去弄 20 根木头回来"));
+        String said = ui.reply(5000);
+        assertTrue(said.contains("我去砍树"), "计划开始前说一句打算：" + said);
+        waitFor(() -> mockConsole.contains("收到 mine"), 5000, "第一步派出");
+        Envelope done = planMessage(ui, p -> p.steps().stream().allMatch(st -> st.state() == dev.blockmate.protocol.PlanStepState.DONE), 15000);
+        assertNotNull(done);
+        dev.blockmate.protocol.Plan p = ProtocolCodec.bodyAs(done, dev.blockmate.protocol.Plan.class);
+        assertEquals("去弄 20 根木头回来", p.goal());
+        assertEquals(2, p.steps().size());
+        assertTrue(mockConsole.contains("收到 deliver"));
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 2000, "done");
+    }
+
+    @Test
+    void 计划不合法_重问一次_第二次合法() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.makePlanArgs = planArgs("""
+                [{"command":"fly","args":{}},{"command":"mine","args":{"block":"oak_log"}}]""");
+        model.makePlanArgsRetry = planArgs("""
+                [{"command":"mine","args":{"block":"oak_log","count":20}},
+                 {"command":"deliver","args":{"item":"oak_log","count":20}}]""");
+        int before = model.requests.size();
+        ui.send(MessageType.CHAT, new Chat("去弄 20 根木头回来"));
+        String said = ui.reply(8000);
+        assertTrue(said.contains("再想想"), "第二次的话也到了网页：" + said);
+        assertTrue(model.requests.stream().skip(before).anyMatch(req -> req.messages().get(req.messages().size() - 1).content()
+                .contains("上次给的计划有问题") && req.messages().get(req.messages().size() - 1).content().contains("fly")),
+                "重问时把毛病告诉模型");
+        waitFor(() -> mockConsole.contains("收到 mine"), 5000, "第二次的计划开始执行");
+        assertTrue(companionSaid("再想想"), "两次的话合在一条消息里存下");
+    }
+
+    @Test
+    void 计划两次不合法_提示主人() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.makePlanArgs = planArgs("""
+                [{"command":"stop","args":{}}]""");
+        model.makePlanArgsRetry = planArgs("""
+                [{"command":"place","args":{"block":"minecraft:furnace"}}]""");
+        ui.send(MessageType.CHAT, new Chat("去弄 20 根木头回来"));
+        String said = ui.reply(8000);
+        assertTrue(said.contains("没想清楚怎么做"), said);
+        assertTrue(said.contains("furnace"), "把第二次的毛病说给主人：" + said);
+        Thread.sleep(800);
+        assertTrue(app.hub().currentPlan().isEmpty(), "没有计划开始");
+        assertFalse(mockConsole.stream().anyMatch(l -> l.startsWith("收到 ")), "没派任何命令：" + mockConsole);
     }
 
     private String currentPlanCommandId() throws Exception {

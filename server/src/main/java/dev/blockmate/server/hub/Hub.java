@@ -338,8 +338,9 @@ public final class Hub {
             boolean done = plan.stepDone(r);
             log.info("plan_step plan_id={} index={} command={} state=done", plan.planId(), step.index(), step.command().wire());
             if (done) {
+                String goal = plan.size() > 1 ? plan.goal() : null;
                 finishPlan();
-                say(step.command(), r);
+                say(step.command(), r, goal);
             } else {
                 pushPlan();
                 dispatchNext();
@@ -360,46 +361,95 @@ public final class Hub {
         BrainContext ctx = context();
         String goal = plan.goal();
         int size = plan.size();
+        List<String> doneNames = new ArrayList<>();
+        for (int i = 0; i < plan.size(); i++) {
+            if (plan.state(i) == dev.blockmate.protocol.PlanStepState.DONE) {
+                doneNames.add(SnapshotSummary.taskName(plan.steps().get(i).command()));
+            }
+        }
+        String doneSummary = doneNames.isEmpty() ? "" : "已做完：" + String.join("、", doneNames);
+        int retriesLeft = PlanRun.MAX_RETRIES - plan.retries();
         brainExec.execute(() -> {
             Brain.PlanDecision d;
             try {
-                d = brain.planFailure(goal, step.index(), size, step.command(), r, ctx);
+                d = brain.planFailure(goal, step.index(), size, step.command(), r, doneSummary, retriesLeft, ctx);
             } catch (ModelException ex) {
                 log.warn("model_fail kind={} msg={} (plan_failure)", ex.kind(), ex.getMessage());
-                d = Brain.PlanDecision.ABORT;
+                d = new Brain.PlanDecision(Brain.PlanDecision.ABORT, "", null);
             }
             Brain.PlanDecision decision = d;
             submit(() -> applyDecision(planId, step, r, decision));
         });
     }
 
+    /** 四选一（任务单 11）：先把脑子的那句话说给主人，再按它说的做。 */
     private void applyDecision(String planId, PlanRun.Step step, Result r, Brain.PlanDecision decision) {
         if (plan == null || !plan.planId().equals(planId) || !plan.running()) {
             return;
         }
-        switch (decision) {
-            case RETRY -> {
+        String say = decision.say() == null ? "" : decision.say().strip();
+        log.info("plan_decision plan_id={} index={} action={} say_len={}", planId, step.index(), decision.action(), say.length());
+        switch (decision.action()) {
+            case Brain.PlanDecision.RETRY -> {
                 if (plan.retryCurrent()) {
+                    sayDecision(say.isBlank() ? "这步没成，我再试一次。" : say);
                     planCommandId = issueCommand(step.command(), step.args(), plan.sourceMessageId());
-                    log.info("plan_step plan_id={} index={} command={} state=running retry=1", planId, step.index(),
-                            step.command().wire());
+                    log.info("plan_step plan_id={} index={} command={} state=running retry={}", planId, step.index(),
+                            step.command().wire(), plan.retries());
                     pushPlan();
                     return;
                 }
-                abortPlan(PlanRun.Outcome.FAILED, step, r);
+                sayDecision((say.isBlank() ? "" : say + " ") + "重试的次数用完了，这件事先放下。");
+                abortQuietly(PlanRun.Outcome.FAILED);
             }
-            case SKIP -> {
+            case Brain.PlanDecision.SKIP -> {
+                sayDecision(say.isBlank() ? "这步跳过，接着做下一步。" : say);
                 plan.skipCurrent();
                 log.info("plan_step plan_id={} index={} command={} state=skipped", planId, step.index(), step.command().wire());
-                if (plan.advance().isPresent()) {
-                    // advance 已把下一步标成 running，这里退回去让 dispatchNext 正常派发
-                    plan.skipCurrent();
-                }
                 pushPlan();
                 abortIfNothingLeftElseDispatch(step, r);
             }
-            default -> abortPlan(PlanRun.Outcome.FAILED, step, r);
+            case Brain.PlanDecision.REPLAN -> {
+                List<String> errors = new ArrayList<>();
+                List<PlanRun.Step> fresh = decision.newSteps() == null ? List.of()
+                        : PlanValidator.validateSteps(decision.newSteps(), step.index() + 1, errors);
+                if (fresh.isEmpty() || !errors.isEmpty()) {
+                    log.info("plan_replan_rejected plan_id={} errors={}", planId, errors);
+                    sayDecision((say.isBlank() ? "" : say + " ") + "不过新步骤我没列对，这件事先放下。");
+                    abortQuietly(PlanRun.Outcome.FAILED);
+                    return;
+                }
+                sayDecision(say.isBlank() ? "换个法子接着做。" : say);
+                plan.replan(fresh);
+                log.info("plan_replan plan_id={} from_index={} new_steps={}", planId, step.index() + 1, fresh.size());
+                pushPlan();
+                dispatchNext();
+            }
+            default -> {
+                if (say.isBlank()) {
+                    abortPlan(PlanRun.Outcome.FAILED, step, r);
+                } else {
+                    sayDecision(say);
+                    abortQuietly(PlanRun.Outcome.FAILED);
+                }
+            }
         }
+    }
+
+    /** 结束计划但不再让脑子说话（四选一里已经说过了）。 */
+    private void abortQuietly(PlanRun.Outcome how) {
+        plan.abort(how, now());
+        finishPlan();
+    }
+
+    /** 四选一时脑子那句"我打算怎么办"直接发给主人并存消息。 */
+    private void sayDecision(String text) {
+        String source = plan != null ? plan.sourceMessageId() : null;
+        String replyId = UUID.randomUUID().toString();
+        replyChunk(replyId, source, text);
+        StoredMessage saved = memory.saveMessage("companion", text, source, null);
+        replyDone(replyId, source, saved.id());
+        log.info("chat_out len={} plan_decision=true msg_id={}", text.length(), saved.id());
     }
 
     private void abortIfNothingLeftElseDispatch(PlanRun.Step failedStep, Result r) {
@@ -504,7 +554,7 @@ public final class Hub {
             // 固定短语：不经过模型，直接当作模型调了这个工具（动作结束后照旧让它说一句）
             log.info("chat_in len={} msg_id={} shortcut={}", text.length(), msg.id(), shortcut.get().wire());
             ToolCall call = new ToolCall("shortcut-" + replyId.substring(0, 8), shortcut.get().wire(), new JsonObject());
-            onDecision(replyId, env.id(), msg, new ModelReply("", List.of(call), 0, 0, 0));
+            onDecision(replyId, env.id(), msg, new ModelReply("", List.of(call), 0, 0, 0), 0, "");
             return;
         }
         log.info("chat_in len={} msg_id={}", text.length(), msg.id());
@@ -512,19 +562,53 @@ public final class Hub {
         brainExec.execute(() -> {
             try {
                 ModelReply reply = brain.decide(text, ctx, chunk -> submit(() -> replyChunk(replyId, env.id(), chunk)));
-                submit(() -> onDecision(replyId, env.id(), msg, reply));
+                submit(() -> onDecision(replyId, env.id(), msg, reply, 0, ""));
             } catch (ModelException ex) {
                 submit(() -> onModelFailure(replyId, env.id(), ex));
             }
         });
     }
 
-    private void onDecision(String replyId, String inReplyTo, StoredMessage src, ModelReply reply) {
+    /** 模型给的计划不合法时最多再问一次（任务单 11）。 */
+    static final int PLAN_REASK_MAX = 1;
+
+    /**
+     * @param planAttempt 第几次拿计划（0 = 第一次；不合法重问后是 1）
+     * @param prefix      重问前已经流给网页的文字，存消息时拼在前面
+     */
+    private void onDecision(String replyId, String inReplyTo, StoredMessage src, ModelReply reply, int planAttempt,
+                            String prefix) {
         modelOk = true;
         String toolJson = reply.hasToolCalls() ? ProtocolCodec.gson().toJson(reply.toolCalls()) : null;
         List<String> notes = new ArrayList<>();
         boolean actionIssued = false;
         for (ToolCall tc : reply.toolCalls()) {
+            if (Tools.MAKE_PLAN.equals(tc.name())) {
+                if (actionIssued) {
+                    notes.add("一次只做一件，先做第一个。");
+                    continue;
+                }
+                if (!companionInWorld()) {
+                    notes.add(NOTICE_OFFLINE + "。");
+                    log.info("action_while_offline name=make_plan");
+                    continue;
+                }
+                PlanValidator.Validated v = PlanValidator.validate(tc.arguments());
+                if (v.ok()) {
+                    log.info("plan_accepted steps={} attempt={}", v.steps().size(), planAttempt);
+                    startPlan(v.goal().isBlank() ? src.text() : v.goal(), v.steps(), src.id());
+                    actionIssued = true;
+                    continue;
+                }
+                log.info("plan_rejected attempt={} errors={}", planAttempt, v.errors());
+                if (planAttempt < PLAN_REASK_MAX) {
+                    reaskPlan(replyId, inReplyTo, src, planAttempt + 1, prefix + reply.text().strip(), v.errors());
+                    return;
+                }
+                notes.add("这件事我没想清楚怎么做（" + String.join("；", v.errors().subList(0, Math.min(2, v.errors().size())))
+                        + "），换个说法再跟我说一遍？");
+                continue;
+            }
             if (Tools.REMEMBER.equals(tc.name())) {
                 String t = tc.arguments() != null && tc.arguments().has("text") ? tc.arguments().get("text").getAsString() : "";
                 if (!t.isBlank()) {
@@ -558,6 +642,15 @@ public final class Hub {
             }
         }
         String text = reply.text().strip();
+        if (!prefix.isBlank()) {
+            // 重问的那次没有流式发：和第一次说的一样就不再发，不一样才补发第二句
+            if (text.isEmpty() || text.equals(prefix)) {
+                text = prefix;
+            } else {
+                replyChunk(replyId, inReplyTo, "\n" + text);
+                text = prefix + "\n" + text;
+            }
+        }
         if (!notes.isEmpty()) {
             String extra = String.join("", notes);
             replyChunk(replyId, inReplyTo, text.isEmpty() ? extra : "\n" + extra);
@@ -567,6 +660,21 @@ public final class Hub {
         replyDone(replyId, inReplyTo, saved.id());
         log.info("chat_out len={} action={} msg_id={}", text.length(), actionIssued, saved.id());
         pushStatus(true);
+    }
+
+    /** 计划不合法：把毛病告诉模型，让它重给一次（还是走 decide，所以它也可以改成单个动作）。 */
+    private void reaskPlan(String replyId, String inReplyTo, StoredMessage src, int attempt, String prefix, List<String> errors) {
+        String again = src.text() + "\n\n[系统] 你上次给的计划有问题：" + String.join("；", errors)
+                + "。只能用工具列表里的命令和参数，最多 " + PlanValidator.MAX_STEPS + " 步。请重新给一个计划；一个动作就能做完就直接调那个工具。";
+        BrainContext ctx = context();
+        brainExec.execute(() -> {
+            try {
+                ModelReply reply = brain.decide(again, ctx, chunk -> { });
+                submit(() -> onDecision(replyId, inReplyTo, src, reply, attempt, prefix));
+            } catch (ModelException ex) {
+                submit(() -> onModelFailure(replyId, inReplyTo, ex));
+            }
+        });
     }
 
     private void onModelFailure(String replyId, String inReplyTo, ModelException ex) {
@@ -615,13 +723,18 @@ public final class Hub {
 
     /** 结果到了，让 Brain 说一句话；模型挂了就用固定描述兜底。 */
     private void say(CommandName name, Result r) {
+        say(name, r, null);
+    }
+
+    /** @param goal 多步计划全部做完时带上主人要的事，让它知道整件事成了（任务单 11） */
+    private void say(CommandName name, Result r, String goal) {
         String source = commandSource.remove(r.commandId());
         String replyId = UUID.randomUUID().toString();
         BrainContext ctx = context();
         brainExec.execute(() -> {
             String text;
             try {
-                ModelReply reply = brain.sayAfterResult(name, r, ctx, chunk -> submit(() -> replyChunk(replyId, source, chunk)));
+                ModelReply reply = brain.sayAfterResult(name, r, goal, ctx, chunk -> submit(() -> replyChunk(replyId, source, chunk)));
                 text = reply.text().strip();
                 submit(() -> modelOk = true);
             } catch (ModelException ex) {

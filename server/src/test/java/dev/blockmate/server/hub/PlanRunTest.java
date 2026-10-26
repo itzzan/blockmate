@@ -64,7 +64,9 @@ class PlanRunTest {
         assertTrue(p.retryCurrent(), "第一次允许重试");
         assertEquals(PlanStepState.RUNNING, p.state(0));
         p.stepFailed(Result.failed("c0b", Reason.STUCK));
-        assertFalse(p.retryCurrent(), "只重试一次");
+        assertTrue(p.retryCurrent(), "整个计划最多重试 2 次");
+        p.stepFailed(Result.failed("c0c", Reason.STUCK));
+        assertFalse(p.retryCurrent(), "第 3 次不行");
         p.skipCurrent();
         assertEquals(PlanStepState.SKIPPED, p.state(0));
         assertEquals(CommandName.PICK_UP, p.advance().orElseThrow().command());
@@ -74,5 +76,22 @@ class PlanRunTest {
         assertEquals(PlanStepState.FAILED, p.state(1));
         assertEquals(PlanStepState.SKIPPED, p.state(2));
         assertTrue(p.stepsJson().contains("\"reason\":\"item_not_found\""), p.stepsJson());
+    }
+
+    @Test
+    void 重排剩余步骤() {
+        PlanRun p = plan();
+        p.advance();
+        p.stepDone(Result.ok("c0"));
+        p.advance();
+        p.stepFailed(Result.failed("c1", Reason.ITEM_NOT_FOUND));
+        p.replan(List.of(new PlanRun.Step(0, CommandName.MINE, new JsonObject()),
+                new PlanRun.Step(0, CommandName.DELIVER, new JsonObject())));
+        assertEquals(4, p.size(), "失败步保留，后面换成两步新的");
+        assertEquals(CommandName.MINE, p.steps().get(2).command());
+        assertEquals(2, p.steps().get(2).index());
+        assertEquals(3, p.steps().get(3).index());
+        assertEquals(PlanStepState.FAILED, p.state(1));
+        assertEquals(CommandName.MINE, p.advance().orElseThrow().command());
     }
 }

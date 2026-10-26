@@ -6,6 +6,7 @@ token: "CHANGE_ME"              # 所有连接（网页、模组、keeper）的�
 owner_name: "Steve"             # 主人（你）的游戏玩家名
 companion_name: "Blockmate"     # 伙伴的游戏玩家名，和白名单、离线账号一致
 persona_path: "persona.md"      # 人设文件，你自己写；改了后台自动重新读，不用重启
+knowledge_dir: "knowledge"      # 知识层目录（任务单 11）：plan_examples.md 常见任务怎么拆；仓库里的 knowledge/ 拷过来
 data_dir: "data"                # SQLite（companion.db）和备份（backup/）放哪
 history_n: 20                   # 每次给模型看最近几条对话
 

@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import dev.blockmate.protocol.CommandName;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -12,9 +13,20 @@ public final class Tools {
 
     public static final String REMEMBER = "remember_preference";
 
-    /** 动作工具：会变成发给模组的 command。 */
+    public static final String MAKE_PLAN = "make_plan";
+    public static final String PLAN_DECISION = "plan_decision";
+
+    /** 动作工具：会变成发给模组的 command（第一阶段 7 个 + 任务单 11 加的 10 个单步工具）。 */
     public static final Set<String> ACTIONS = Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver",
-            "report_status");
+            "report_status", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home",
+            "remember_place", "use_furnace");
+
+    /** 计划里允许出现的命令（不含 stop / cancel / report_status / rejoin）。 */
+    public static final Set<String> PLANNABLE = Set.of("follow", "come_here", "wait_here", "pick_up", "deliver", "goto",
+            "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place", "use_furnace");
+
+    private static final Set<String> REQUIRED_KEYS = Set.of("item", "count", "text", "block", "goal", "steps", "action",
+            "say", "name", "input");
 
     private Tools() {
     }
@@ -47,7 +59,87 @@ public final class Tools {
                 "count", prop("integer", "数量"),
                 "to", prop("string", "交给谁的玩家名，可不填，默认是主人"))));
         a.add(fn("report_status", "看看自己现在在哪、有什么、在做什么", Map.of()));
+        // ---- 第二阶段的单步动作（任务单 11）。一句话一个动作就能做完时直接用这些，不要 make_plan ----
+        a.add(fn("goto", "走到一个坐标，或走到记过的地点", Map.of(
+                "x", prop("number", "坐标 x"), "y", prop("number", "坐标 y"), "z", prop("number", "坐标 z"),
+                "place", prop("string", "记过的地点名，如 home / bed；给了 place 就不用坐标"))));
+        a.add(fn("mine", "挖指定方块直到拿到指定数量，只能挖白名单里的（原木、原石、矿、沙土）", Map.of(
+                "block", prop("string", "方块 id，如 minecraft:oak_log"),
+                "count", prop("integer", "要拿到的数量"),
+                "radius", prop("integer", "搜索半径（格），可不填，默认 32"))));
+        a.add(fn("collect", "捡附近所有掉落物", Map.of(
+                "radius", prop("integer", "半径（格），可不填，默认 8"),
+                "item", prop("string", "只捡这一种，可不填"))));
+        a.add(fn("craft", "合成物品（需要的木板、木棍会顺手做；需要工作台时自己找或放一个）", Map.of(
+                "item", prop("string", "物品 id，如 minecraft:stone_pickaxe"),
+                "count", prop("integer", "份数，可不填，默认 1"))));
+        a.add(fn("place", "放一个方块，只允许 minecraft:crafting_table / minecraft:torch / 自己的床", Map.of(
+                "block", prop("string", "方块 id"))));
+        a.add(fn("pickup_block", "收回自己放过的方块（默认工作台）", Map.of(
+                "block", prop("string", "方块 id，可不填，默认 minecraft:crafting_table"))));
+        a.add(fn("eat", "吃背包里的食物；饿了（饥饿低于 14）就该吃", Map.of(
+                "item", prop("string", "吃哪种，可不填，默认背包里任意食物"))));
+        a.add(fn("sleep", "走到附近或记过的床睡觉，只有晚上能睡", Map.of()));
+        a.add(fn("go_home", "回到记过的家（home）", Map.of()));
+        a.add(fn("remember_place", "把当前位置记成一个地点名，比如主人说\"记住这里是家\"", Map.of(
+                "name", prop("string", "地点名：home / bed 或主人说的名字"))));
+        a.add(fn("use_furnace", "用附近的熔炉烧东西", Map.of(
+                "input", prop("string", "要烧的物品 id，如 minecraft:raw_iron"),
+                "fuel", prop("string", "燃料 id，如 minecraft:coal，可不填"),
+                "count", prop("integer", "烧几个，可不填，默认全部"))));
+        a.add(makePlan());
         a.add(remember());
+        return a;
+    }
+
+    /** make_plan：一句话要几个动作才能做完时用（任务单 11）。 */
+    private static JsonObject makePlan() {
+        JsonObject step = new JsonObject();
+        step.addProperty("type", "object");
+        JsonObject sp = new JsonObject();
+        JsonObject command = prop("string", "命令名，只能是：" + String.join(" / ", PLANNABLE.stream().sorted().toList()));
+        JsonArray en = new JsonArray();
+        PLANNABLE.stream().sorted().forEach(en::add);
+        command.add("enum", en);
+        sp.add("command", command);
+        JsonObject args = new JsonObject();
+        args.addProperty("type", "object");
+        args.addProperty("description", "这条命令的参数，和同名工具的参数一样；没有就给 {}");
+        sp.add("args", args);
+        sp.add("why", prop("string", "为什么要这一步，几个字"));
+        step.add("properties", sp);
+        JsonArray req = new JsonArray();
+        req.add("command");
+        step.add("required", req);
+        JsonObject steps = new JsonObject();
+        steps.addProperty("type", "array");
+        steps.addProperty("description", "按顺序的步骤，最多 8 步");
+        steps.add("items", step);
+        return fn(MAKE_PLAN, "主人要的事一个动作做不完（比如\"去弄 20 根木头回来\"\"做一把石镐给我\"\"回家睡觉\"）时，"
+                + "给出按顺序的几步。能用一个动作做完的事不要用它。参考系统提示里\"常见任务怎么拆\"的例子", Map.of(
+                "goal", prop("string", "主人要的事，用原话"),
+                "steps", steps));
+    }
+
+    /** 计划里某一步失败后，问脑子怎么办时只给这一个工具（任务单 11）。 */
+    public static JsonArray planDecision() {
+        JsonArray a = new JsonArray();
+        JsonObject action = prop("string", "retry = 同一步再试一次；skip = 跳过这步做下一步；replan = 剩下的步骤重排（给 new_steps）；abort = 放弃整件事");
+        JsonArray en = new JsonArray();
+        for (String s : List.of("retry", "skip", "replan", "abort")) {
+            en.add(s);
+        }
+        action.add("enum", en);
+        JsonObject steps = new JsonObject();
+        steps.addProperty("type", "array");
+        steps.addProperty("description", "action=replan 时，替换掉剩余步骤的新步骤，格式同 make_plan 的 steps");
+        JsonObject item = new JsonObject();
+        item.addProperty("type", "object");
+        steps.add("items", item);
+        a.add(fn(PLAN_DECISION, "决定失败后怎么办，并用一句话告诉主人你要怎么做", Map.of(
+                "action", action,
+                "say", prop("string", "先对主人说的一句话，像平时说话那样"),
+                "new_steps", steps)));
         return a;
     }
 
@@ -77,7 +169,8 @@ public final class Tools {
         JsonArray required = new JsonArray();
         props.forEach((k, v) -> {
             properties.add(k, v);
-            if (k.equals("item") || k.equals("count") || k.equals("text")) {
+            boolean optional = v.has("description") && v.get("description").getAsString().contains("可不填");
+            if (REQUIRED_KEYS.contains(k) && !optional) {
                 required.add(k);
             }
         });

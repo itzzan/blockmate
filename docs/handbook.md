@@ -275,7 +275,7 @@ detail 按命令不同：
 
 【手册】同一时刻只有一个进行中的任务；新任务替换旧任务时，旧任务要收到自己的 cancelled 结果。
 
-【任务单 10】任务槽之上多了一层"计划"（PlanRun）：同一时刻只有一个计划，单个动作就是只有一步的计划。hub 把当前步派给模组（走下面的单任务槽状态机），result ok 就派下一步，最后一步 ok 计划结束为 done；一步失败（failed / hub 合成的 timeout 等 / ack rejected）时：只有一步的计划直接结束为 failed；多步的问 Brain（"放弃 / 跳过 / 重试"，重试最多一次，模型答不上来算放弃）。"停"（网页按钮或模型的 stop 工具）：当前步照旧发 stop 命令，剩余步全部 skipped，计划结束为 aborted；整个计划超过 `timeouts_s.plan`（默认 900 秒）结束为 timeout。每步状态变化 hub 向网页广播一条 plan 消息；计划结束时写进 plans 表；INFO 日志 `plan_start / plan_step index= command= state= / plan_end outcome=`，不含目标原话。新计划到来时旧计划按 aborted 结束。
+【任务单 10】任务槽之上多了一层"计划"（PlanRun）：同一时刻只有一个计划，单个动作就是只有一步的计划。hub 把当前步派给模组（走下面的单任务槽状态机），result ok 就派下一步，最后一步 ok 计划结束为 done；一步失败（failed / hub 合成的 timeout 等 / ack rejected）时：只有一步的计划直接结束为 failed；多步的问 Brain（任务单 11 起用 plan_decision 工具四选一 retry / skip / replan / abort，见 §9；整个计划 retry 最多 2 次，模型答不上来算放弃；选什么都先把它那句话发给主人）。"停"（网页按钮或模型的 stop 工具）：当前步照旧发 stop 命令，剩余步全部 skipped，计划结束为 aborted；整个计划超过 `timeouts_s.plan`（默认 900 秒）结束为 timeout。每步状态变化 hub 向网页广播一条 plan 消息；计划结束时写进 plans 表；INFO 日志 `plan_start / plan_step index= command= state= / plan_end outcome=`，不含目标原话。新计划到来时旧计划按 aborted 结束。
 
 【细则】
 
@@ -320,6 +320,17 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
 | remember_preference | text | 玩家表达了一个长期偏好或约定时记下来，需要玩家确认才生效 |
 
 决策请求 = 带全部工具；"说一句话"请求（result 到达后、伙伴离线时的提示等）= 只带 remember_preference 或不带工具。模型一次返回多个工具调用时，全部按顺序存进 messages.tool_calls，只执行第一个动作工具。
+
+【任务单 11】让脑子会拆步骤（2026-10-26）：
+
+- system 顺序变为：persona.md 全文 → 动作规则 + 说话规则 + **计划规则**（PromptBuilder.ACTION_RULE）→ `knowledge/plan_examples.md` 全文（Knowledge 类按修改时间热重载，目录由 config `knowledge_dir` 指定，默认 config.yaml 旁的 knowledge/；文件不存在只警告一次）→ 已确认偏好 → 最近日记 → 最近任务。plan_examples 一次对话里不变，所以放在前面不打断前缀缓存。
+- 计划规则原文："主人要的事一个动作做不完时用 make_plan 给出几步（最多 8 步），同时用一句话说你打算怎么做，不要念步骤清单；一个动作就能做完的事直接用那个工具，不要 make_plan。计划开始后每做完一步不用说话，全部做完再说一句。"
+- 新增单步工具（和 §7.1 的命令一一对应，参数同名）：goto(x,y,z 或 place)、mine(block, count, radius 可选)、collect(radius、item 可选)、craft(item, count 可选)、place(block)、pickup_block(block 可选)、eat(item 可选)、sleep、go_home、remember_place(name)、use_furnace(input, fuel 可选, count 可选)。描述里写"可不填"的参数不进 required。
+- `make_plan(goal, steps[])`：steps 每项 `{command, args, why}`，command 的 JSON schema 带 enum = 可入计划的 16 个命令（没有 stop / cancel / report_status / rejoin）。决策请求现在带 20 个工具（7 + 11 + make_plan + remember_preference）。
+- 校验（PlanValidator，hub 侧）：steps 非空且 ≤ 8；每步命令在 enum 里；参数按命令查——mine 要 block + count>0，deliver 要 item + count>0，pick_up / craft 要 item，use_furnace 要 input，remember_place 要 name，place 的 block 只能是工作台 / 火把 / 床，goto 要 x/y/z 或 place；item / block / input / fuel 没写命名空间自动补 `minecraft:`。整条有任何一处不合法就拒掉：第一次拒掉时把毛病拼在主人原话后面再问一次模型（"[系统] 你上次给的计划有问题：…。只能用工具列表里的命令和参数，最多 8 步。请重新给一个计划；一个动作就能做完就直接调那个工具。"），两次的文字合成一条伙伴消息；第二次还不合法就对主人说"这件事我没想清楚怎么做（前两条毛病），换个说法再跟我说一遍？"，不开始计划。合法的 make_plan 和单个动作工具一样占"一次只做一件"的名额。
+- 一步失败后的四选一：hub 用只带 `plan_decision(action, say, new_steps)` 工具的请求问模型，user 内容是"[系统] 你在做「目标」这件事，一共 N 步，第 k 步「动作名」没做成：原因。已做完：…。剩余重试额度 r 次。请调用 plan_decision …"。hub 先把 `say` 存成 companion 消息并发到网页（日志 `chat_out … plan_decision=true`），再执行：retry → 同一步重发（整个计划最多 2 次，额度用完算放弃并补一句"重试的次数用完了"）；skip → 当前步 skipped，派下一个 pending 步，没有了按 failed 结束；replan → `new_steps` 走同一套校验（index 接着编），通过就替换掉失败步之后的所有剩余步再派，不通过算放弃并补一句"新步骤我没列对"；abort → failed 结束，say 为空时退回原来的"结果到了说一句"。模型没调工具时按文字里有没有"重试 / 跳过"兜底，否则放弃。
+- 说话：make_plan 那一轮模型的文字就是"打算"，直接当回复；每步 ok 不说；最后一步 ok 时的"说一句"提示改成"主人要的「目标」你全部做完了，最后一步「…」：…"。
+- 日志：`plan_accepted steps= attempt=`、`plan_rejected attempt= errors=`（errors 是校验短语，不含原话）、`plan_decision plan_id= index= action= say_len=`、`plan_replan plan_id= from_index= new_steps=`、`plan_replan_rejected`、`knowledge loaded file= len=`。
 
 ## 10. Gateway：和 Ollama 怎么说话
 
@@ -399,6 +410,7 @@ token: "CHANGE_ME"              # 所有连接的口令，自己生成一串长�
 owner_name: "Zan421"            # 主人的游戏玩家名
 companion_name: "Blockmate"     # 伙伴的游戏玩家名
 persona_path: "persona.md"      # 人设文件，相对 config.yaml 所在目录
+knowledge_dir: "knowledge"      # 知识层目录（任务单 11）：plan_examples.md 等，相对 config.yaml 所在目录；仓库 knowledge/ 拷过去
 data_dir: "data"                # SQLite 和备份放哪
 history_n: 20                   # 每次给模型看最近几条对话
 ollama:
