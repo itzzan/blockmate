@@ -190,12 +190,79 @@ public final class Brain {
                     return "想停但身体还在滑";
                 }
             }
+            // 任务单 13 / 14 的动作：把数量说出来
+            if (r.detail() != null) {
+                switch (name) {
+                    case MINE -> {
+                        Result.MineDetail d = r.detailAs(Result.MineDetail.class);
+                        if (d != null) {
+                            return "成功，挖到了 " + d.mined() + " 个，在你自己的背包里";
+                        }
+                    }
+                    case COLLECT -> {
+                        Result.CollectDetail d = r.detailAs(Result.CollectDetail.class);
+                        if (d != null) {
+                            return "成功，捡了 " + d.picked() + " 个";
+                        }
+                    }
+                    case CRAFT -> {
+                        Result.CraftDetail d = r.detailAs(Result.CraftDetail.class);
+                        if (d != null) {
+                            return "成功，做出来 " + d.crafted() + " 个，在你自己的背包里";
+                        }
+                    }
+                    case GOTO, GO_HOME -> {
+                        return "成功，到了";
+                    }
+                    case PLACE -> {
+                        return "成功，放好了";
+                    }
+                    case PICKUP_BLOCK -> {
+                        return "成功，收回来了";
+                    }
+                    case REMEMBER_PLACE -> {
+                        return "成功，记住这个地点了";
+                    }
+                    default -> {
+                    }
+                }
+            }
             return "成功";
         }
         if (r.status() == ResultStatus.CANCELLED) {
             return "被新的指令打断，没做完";
         }
-        return "失败，原因：" + reasonZh(r.reason());
+        String base = "失败，原因：" + reasonZh(r.reason());
+        if (r.detail() != null) {
+            if (name == CommandName.CRAFT || name == CommandName.PLACE) {
+                Result.CraftDetail d = r.detailAs(Result.CraftDetail.class);
+                if (d != null) {
+                    StringBuilder sb = new StringBuilder(base);
+                    if (d.missing() != null && !d.missing().isEmpty()) {
+                        sb.append("（缺");
+                        d.missing().forEach((k, v) -> sb.append(" ").append(k).append("×").append(v));
+                        sb.append("）");
+                    }
+                    if (d.crafted() > 0) {
+                        sb.append("，之前已经做出来 ").append(d.crafted()).append(" 个");
+                    }
+                    return sb.toString();
+                }
+            }
+            if (name == CommandName.MINE) {
+                Result.MineDetail d = r.detailAs(Result.MineDetail.class);
+                if (d != null && d.mined() > 0) {
+                    return base + "，之前已经挖到 " + d.mined() + " 个";
+                }
+            }
+            if (name == CommandName.COLLECT) {
+                Result.CollectDetail d = r.detailAs(Result.CollectDetail.class);
+                if (d != null && d.picked() > 0) {
+                    return base + "，之前已经捡了 " + d.picked() + " 个";
+                }
+            }
+        }
+        return base;
     }
 
     public static String reasonZh(Reason r) {

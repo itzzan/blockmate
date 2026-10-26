@@ -201,9 +201,9 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | goto | x, y, z 或 place（记过的地点名，如 home / bed） | 走到目标 2 格内；地点没记过回 no_place_known。【任务单 13】place 由 hub 查 places 表换成坐标再下发（args 里同时带 place 便于日志），模组只认坐标；没记过或记在别的维度，hub 自己合成 failed no_place_known，不发模组 |
 | mine | block（方块 id），count，radius（默认 32，模组最多 48） | 在半径内找并挖该方块，直到背包多了 count 个"该方块的掉落物"（blocks.yaml 的 drops 段：石头掉圆石、铁矿掉粗铁……没写的同名）；block 不在白名单回 not_allowed（人不动）；开挖前半径内（已加载区块）一个都没有回 item_not_found；20 秒没多挖到一个回 stuck；主人在服里却离开 64 格以上（或看不见）回 target_too_far；Baritone 自己停了还没够回 item_not_found；失败时 detail 的 mined 都带已挖数。【任务单 13】hub 派发前把"要掉落物"的请求换成能掉它的方块（block=cobblestone 换成 block=stone，原请求记在 args.wanted），圆石本身不在可挖清单 |
 | collect | radius（默认 8），item（可选，只捡这一种） | 捡半径内所有掉落物；开始时半径内没东西回 item_not_found；背包满回 inventory_full；两倍半径内 2 秒没剩东西算捡完，detail picked = 背包总数增量 |
-| craft | item（物品 id），count（默认 1） | 合成；配方问游戏客户端，没有回 no_recipe，材料不够回 no_materials；需要工作台时模组自己找 8 格内的或放一个再收回 |
-| place | block（只允许 minecraft:crafting_table / minecraft:torch / 自己的床），pos（可选） | 在脚边或指定位置放方块；别的方块回 not_allowed |
-| pickup_block | block（默认 minecraft:crafting_table） | 收回自己放过的方块；只收自己放的，位置模组自己记 |
+| craft | item（物品 id），count（默认 1） | 合成；配方问游戏客户端，没有回 no_recipe，材料不够回 no_materials（detail.missing 说缺什么）；需要工作台时模组自己找 8 格内的或放一个再收回。【任务单 14 第一批】只做 2×2 能做的配方：用背包自带的合成格（背包菜单格子 1–4），每个格子三下点击（拿起材料叠、右键放一个、放回剩下的）+ shift 点结果格，全部走 handleInventoryMouseClick 发包；一次做一份，按背包里成品数量增量确认，3 秒没多算 stuck；需要工作台的配方先回 no_materials（missing crafting_table），第二批改成真的去用工作台；结束时发一次关背包让服务器退回格子里剩的材料 |
+| place | block（只允许 minecraft:crafting_table / minecraft:torch / 自己的床），pos（可选） | 在脚边或指定位置放方块；别的方块回 not_allowed。【任务单 14】只认 blocks.yaml 的 placeable；背包没有回 no_materials；脚边东南西北四格里第一个"本身空、下面顶面实心"的位置，都没有回 stuck；把物品 SWAP 到快捷栏第 9 格选中，BreakGuard 打开 allowPlace，对下方方块顶面 useItemOn，1 秒内确认方块出现才回 ok（detail pos），并记下位置给 pickup_block；pos 参数暂不支持 |
+| pickup_block | block（默认 minecraft:crafting_table） | 收回自己放过的方块；只收自己放的，位置模组自己记。【任务单 14】没放过或那里已经不是这种方块回 item_not_found；超过 4 格先用 Baritone 走到 2 格内；破坏不用 Baritone 挖矿过程（会去挖别人的），自己对那个坐标发 startDestroyBlock / continueDestroyBlock 直到变空气（BreakGuard 只放行这种方块，10 秒没挖掉回 stuck）；然后走到那格把掉落捡起来，5 秒没捡到回 not_picked；成功 detail pos |
 | eat | item（可选） | 吃 item 或背包里任意食物；没食物回 no_materials |
 | sleep | — | 走到 8 格内的床或记过的 bed 地点睡下；没床回 no_bed，还没到晚上回 not_night |
 | go_home | — | 等于 goto place=home；没记过回 no_place_known。【任务单 13】hub 换成坐标后以 goto 下发，计划里仍显示 go_home |
@@ -244,7 +244,7 @@ detail 按命令不同：
 - stop：`{"stationary": true | false, "attempts": 1}`。stationary=false 表示三次 cancelEverything 之后仍未静止。
 - pick_up：`{"picked": 8}`。
 - rejoin：`{"attempt": 2}`。
-- 任务单 9 加的：goto / go_home `{"distance": 1.6}`；mine `{"mined": 12}`（失败时也带，说明挖到一半）；collect `{"picked": 5}`；craft `{"crafted": 4}`；place / pickup_block `{"pos": {…}}`；eat `{"item": "minecraft:bread", "food_after": 20}`；sleep `{"slept": true}`；use_furnace `{"smelted": 8}`。
+- 任务单 9 加的：goto / go_home `{"distance": 1.6}`；mine `{"mined": 12}`（失败时也带，说明挖到一半）；collect `{"picked": 5}`；craft `{"crafted": 4}`（任务单 14：no_materials 时加 `"missing": {"minecraft:oak_planks": 2}`）；place / pickup_block `{"pos": {…}}`；eat `{"item": "minecraft:bread", "food_after": 20}`；sleep `{"slept": true}`；use_furnace `{"smelted": 8}`。
 
 ### 7.5 原因码
 

@@ -158,5 +158,15 @@ class BrainUnitTest {
         assertTrue(Brain.describeResult(CommandName.DELIVER,
                 Result.ok("c", new Result.DeliverDetail(DeliveryOutcome.THROWN_UNCONFIRMED, 8))).contains("不知道收没收到"));
         assertEquals("失败，原因：身体没反应", Brain.describeResult(CommandName.COME_HERE, Result.failed("c", Reason.EXECUTOR_UNRESPONSIVE)));
+        // 任务单 13 / 14：把数量和缺的材料说出来
+        assertEquals("成功，挖到了 12 个，在你自己的背包里", Brain.describeResult(CommandName.MINE, Result.ok("c", new Result.MineDetail(12))));
+        assertTrue(Brain.describeResult(CommandName.MINE, Result.failed("c", Reason.STUCK, new Result.MineDetail(3))).endsWith("，之前已经挖到 3 个"));
+        assertEquals("成功，做出来 4 个，在你自己的背包里", Brain.describeResult(CommandName.CRAFT, Result.ok("c", new Result.CraftDetail(4))));
+        String miss = Brain.describeResult(CommandName.CRAFT, Result.failed("c", Reason.NO_MATERIALS,
+                new Result.CraftDetail(0, java.util.Map.of("minecraft:oak_planks", 2))));
+        assertTrue(miss.contains("缺 minecraft:oak_planks×2"), miss);
+        assertEquals("成功，到了", Brain.describeResult(CommandName.GO_HOME, Result.ok("c", new Result.GotoDetail(1.2))));
+        assertEquals("成功，记住这个地点了", Brain.describeResult(CommandName.REMEMBER_PLACE,
+                Result.ok("c", new Result.RememberPlaceDetail("home", new dev.blockmate.protocol.Pos(1, 2, 3)))));
     }
 }

@@ -64,7 +64,11 @@ public record Result(String commandId, ResultStatus status, Reason reason, JsonO
     }
 
     /** craft：合成出的数量。 */
-    public record CraftDetail(int crafted) {
+    /** craft：做出来几个；失败（no_materials）时 missing 说缺什么、缺几个（任务单 14）。 */
+    public record CraftDetail(int crafted, java.util.Map<String, Integer> missing) {
+        public CraftDetail(int crafted) {
+            this(crafted, null);
+        }
     }
 
     /** place / pickup_block：方块的位置。 */
