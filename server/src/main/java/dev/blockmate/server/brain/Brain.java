@@ -223,6 +223,12 @@ public final class Brain {
                     case REMEMBER_PLACE -> {
                         return "成功，记住这个地点了";
                     }
+                    case USE_FURNACE -> {
+                        Result.UseFurnaceDetail d = r.detailAs(Result.UseFurnaceDetail.class);
+                        if (d != null) {
+                            return "成功，烧好了 " + d.smelted() + " 个，在你自己的背包里";
+                        }
+                    }
                     default -> {
                     }
                 }
@@ -259,6 +265,12 @@ public final class Brain {
                 Result.CollectDetail d = r.detailAs(Result.CollectDetail.class);
                 if (d != null && d.picked() > 0) {
                     return base + "，之前已经捡了 " + d.picked() + " 个";
+                }
+            }
+            if (name == CommandName.USE_FURNACE) {
+                Result.UseFurnaceDetail d = r.detailAs(Result.UseFurnaceDetail.class);
+                if (d != null && d.smelted() > 0) {
+                    return base + "，之前已经烧好 " + d.smelted() + " 个";
                 }
             }
         }

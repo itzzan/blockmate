@@ -166,6 +166,8 @@ class BrainUnitTest {
                 new Result.CraftDetail(0, java.util.Map.of("minecraft:oak_planks", 2))));
         assertTrue(miss.contains("缺 minecraft:oak_planks×2"), miss);
         assertEquals("成功，到了", Brain.describeResult(CommandName.GO_HOME, Result.ok("c", new Result.GotoDetail(1.2))));
+        assertEquals("成功，烧好了 8 个，在你自己的背包里", Brain.describeResult(CommandName.USE_FURNACE, Result.ok("c", new Result.UseFurnaceDetail(8))));
+        assertTrue(Brain.describeResult(CommandName.USE_FURNACE, Result.failed("c", Reason.NO_MATERIALS, new Result.UseFurnaceDetail(3))).endsWith("，之前已经烧好 3 个"));
         assertEquals("成功，记住这个地点了", Brain.describeResult(CommandName.REMEMBER_PLACE,
                 Result.ok("c", new Result.RememberPlaceDetail("home", new dev.blockmate.protocol.Pos(1, 2, 3)))));
     }

@@ -192,6 +192,15 @@ public final class Simulator {
                 yield new Result.MineDetail(a == null ? 0 : a.count());
             }
             case COLLECT -> new Result.CollectDetail(3);
+            case CRAFT -> {
+                Command.CraftArgs a = ProtocolCodec.gson().fromJson(t.args(), Command.CraftArgs.class);
+                yield new Result.CraftDetail(a == null ? 1 : a.countOrDefault());
+            }
+            case USE_FURNACE -> {
+                Command.UseFurnaceArgs a = ProtocolCodec.gson().fromJson(t.args(), Command.UseFurnaceArgs.class);
+                yield new Result.UseFurnaceDetail(a == null || a.count() == null ? 1 : a.count());
+            }
+            case PLACE, PICKUP_BLOCK -> new Result.PlaceDetail(pos());
             default -> null;
         };
         send(MessageType.RESULT, detail == null ? Result.ok(t.commandId()) : Result.ok(t.commandId(), detail));

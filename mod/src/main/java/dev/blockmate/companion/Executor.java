@@ -30,6 +30,8 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
@@ -50,7 +52,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin；任务单 13 加 goto / mine / collect；任务单 14 加 craft（2×2）/ place / pickup_block。
+ * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin；任务单 13 加 goto / mine / collect；任务单 14 加 craft / place / pickup_block / use_furnace。
  * 单任务槽：新 command 到达先给旧任务回 result cancelled，再回新任务的 ack。全部在游戏线程上。
  */
 public final class Executor implements AbstractGameEventListener {
@@ -82,8 +84,18 @@ public final class Executor implements AbstractGameEventListener {
     private static final int BREAK_TIMEOUT_TICKS = 200;      // 10 秒还没挖掉
     private static final int PICK_TIMEOUT_TICKS = 100;       // 挖掉后 5 秒内要捡到
     private static final int PLACE_HOTBAR_SLOT = 8;          // 放方块用快捷栏最后一格
+    private static final int STATION_RADIUS = 8;             // 工作台 / 熔炉在 8 格内才算"附近有"
+    private static final int MENU_OPEN_TIMEOUT_TICKS = 40;   // 对工作台 / 熔炉右键后 2 秒内菜单要打开
+    private static final int FURNACE_CHECK_TICKS = 40;       // 每 2 秒看一次熔炉
+    private static final int FURNACE_UNLIT_TICKS = 100;      // 原料还在、炉子灭了 5 秒且没燃料 = 燃料用完
 
-    private enum Phase { APPROACH, THROW, BACK_OFF, WAIT_CONFIRM, BREAK, PICK }
+    private enum Phase {
+        APPROACH, THROW, BACK_OFF, WAIT_CONFIRM, BREAK, PICK,
+        // 任务单 14 第二批：工作台 / 熔炉
+        STATION_PLACE, STATION_APPROACH, STATION_OPEN, TABLE_CRAFT, FURNACE_LOAD, FURNACE_WAIT, STATION_PICKUP
+    }
+
+    private enum OpState { RUNNING, DONE, FAILED }
 
     /** 一次背包菜单点击（任务单 14），发包给服务器裁决。 */
     private record Click(int slot, int button, ClickType type) {
@@ -120,8 +132,26 @@ public final class Executor implements AbstractGameEventListener {
         int batchStartCount;
         int waitSince = -1;
         BlockPos placePos;
-        int placeStage;       // place：0 换快捷栏 1 等稳 2 已放等确认
-        boolean breaking;
+        // 子动作：放一个方块 / 把自己放的挖回来（任务单 14 第二批抽出来，place / pickup_block / 工作台 / 熔炉共用）
+        BlockPos opPos;
+        String opBlockId;
+        Block opBlock;
+        int opStage;
+        int opStartTick;
+        boolean opBreaking;
+        int opStartCount;
+        Reason opReason;
+        // 工作台 / 熔炉
+        boolean useTable;
+        BlockPos stationPos;
+        boolean selfPlaced;
+        int openSince = -1;
+        Result pending;
+        String fuelId;
+        Integer smeltCount;
+        int smelted;
+        int unlitSince = -1;
+        int lastCheckTick;
         // deliver
         Phase phase = Phase.APPROACH;
         String targetName;
@@ -230,6 +260,7 @@ public final class Executor implements AbstractGameEventListener {
             case CRAFT -> startCraft(env.id(), cmd.args(), mc);
             case PLACE -> startPlace(env.id(), cmd.args(), mc);
             case PICKUP_BLOCK -> startPickupBlock(env.id(), cmd.args(), mc);
+            case USE_FURNACE -> startUseFurnace(env.id(), cmd.args(), mc);
             default -> {
                 // 任务单 9 加的新命令，模组还没实现：按 handbook 7.1 立刻拒绝，别让 hub 等 3 秒判无响应
                 CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
@@ -365,6 +396,7 @@ public final class Executor implements AbstractGameEventListener {
     private void startStop(String id) {
         if (current != null) {
             send(MessageType.RESULT, Result.cancelled(current.id));
+            closeMenuIfOpen(current);
             current = null;
         }
         boolean r = BaritoneBridge.cancelEverything();
@@ -382,6 +414,7 @@ public final class Executor implements AbstractGameEventListener {
         }
         send(MessageType.RESULT, Result.cancelled(current.id));
         CompanionMod.LOG.info(CompanionMod.TAG + "task {} cancelled (replaced)", current.name.wire());
+        closeMenuIfOpen(current);
         current = null;
         BaritoneBridge.cancelEverything();
         BreakGuard.closeAll("task replaced");
@@ -391,6 +424,7 @@ public final class Executor implements AbstractGameEventListener {
     public void onLinkLost() {
         if (current != null) {
             CompanionMod.LOG.info(CompanionMod.TAG + "link lost, dropping task {}", current.name.wire());
+            closeMenuIfOpen(current);
             current = null;
         }
         BaritoneBridge.cancelEverything();
@@ -428,12 +462,13 @@ public final class Executor implements AbstractGameEventListener {
             case CRAFT -> tickCraft(mc, me);
             case PLACE -> tickPlace(mc, me);
             case PICKUP_BLOCK -> tickPickupBlock(mc, me);
+            case USE_FURNACE -> tickUseFurnace(mc, me);
             default -> {
             }
         }
     }
 
-    // ---------------- 任务单 14：craft（2×2）/ place / pickup_block ----------------
+    // ---------------- 任务单 14：craft / place / pickup_block / use_furnace ----------------
 
     private void startCraft(String id, JsonObject args, Minecraft mc) {
         cancelCurrent();
@@ -448,53 +483,51 @@ public final class Executor implements AbstractGameEventListener {
         }
         LocalPlayer me = mc.player;
         if (me.containerMenu != me.inventoryMenu) {
-            me.closeContainer(); // 把别的界面关掉，用背包自带的 2×2
+            me.closeContainer();
         }
         if (!me.inventoryMenu.getCarried().isEmpty()) {
             CompanionMod.LOG.info(CompanionMod.TAG + "craft: cursor not empty -> stuck");
             finish(Result.failed(id, Reason.STUCK, new Result.CraftDetail(0)));
             return;
         }
-        // 找配方：成品是它、2×2 能做的；都要工作台的留给第二批
-        List<CraftingRecipe> small = new ArrayList<>();
-        boolean anyRecipe = false;
+        List<CraftingRecipe> all = new ArrayList<>();
         for (CraftingRecipe r : mc.level.getRecipeManager().getAllRecipesFor(RecipeType.CRAFTING)) {
             ItemStack out = r.getResultItem(mc.level.registryAccess());
-            if (out == null || out.isEmpty() || !item.equals(idOf(out))) {
-                continue;
-            }
-            anyRecipe = true;
-            if (r.canCraftInDimensions(2, 2)) {
-                small.add(r);
+            if (out != null && !out.isEmpty() && item.equals(idOf(out))) {
+                all.add(r);
             }
         }
-        if (!anyRecipe) {
+        if (all.isEmpty()) {
             CompanionMod.LOG.info(CompanionMod.TAG + "craft: no recipe for {}", item);
             finish(Result.failed(id, Reason.NO_RECIPE, new Result.CraftDetail(0)));
             return;
         }
-        if (small.isEmpty()) {
-            CompanionMod.LOG.info(CompanionMod.TAG + "craft: {} needs a crafting table (3x3) -> no_materials crafting_table", item);
-            finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of("minecraft:crafting_table", 1))));
-            return;
-        }
         Map<String, Integer> inv = inventorySummary(me);
+        // 先试 2×2（背包自带的格子），再试 3×3（要工作台）
         CraftingRecipe chosen = null;
         List<CraftPlanner.Cell> chosenCells = null;
+        boolean useTable = false;
         Map<String, Integer> firstMissing = null;
-        for (CraftingRecipe r : small) {
-            List<CraftPlanner.Cell> cells = cellsFor(r, 2, 2);
-            if (cells == null) {
-                continue;
-            }
-            CraftPlanner.Plan plan = CraftPlanner.plan(cells, inv);
-            if (plan.ok()) {
-                chosen = r;
-                chosenCells = cells;
-                break;
-            }
-            if (firstMissing == null) {
-                firstMissing = plan.missing();
+        for (int pass = 0; pass < 2 && chosen == null; pass++) {
+            int w = pass == 0 ? 2 : 3;
+            for (CraftingRecipe r : all) {
+                if (pass == 0 && !r.canCraftInDimensions(2, 2)) {
+                    continue;
+                }
+                List<CraftPlanner.Cell> cells = cellsFor(r, w, w);
+                if (cells == null) {
+                    continue;
+                }
+                CraftPlanner.Plan plan = CraftPlanner.plan(cells, inv);
+                if (plan.ok()) {
+                    chosen = r;
+                    chosenCells = cells;
+                    useTable = pass == 1;
+                    break;
+                }
+                if (firstMissing == null) {
+                    firstMissing = plan.missing();
+                }
             }
         }
         if (chosen == null) {
@@ -509,10 +542,26 @@ public final class Executor implements AbstractGameEventListener {
         t.batchesLeft = CraftPlanner.batches(wanted, t.perCraft);
         t.startCount = countItem(me, item);
         t.batchStartCount = t.startCount;
-        t.clicks = buildClicks(me, CraftPlanner.plan(chosenCells, inv));
+        t.useTable = useTable;
+        if (!useTable) {
+            t.clicks = buildClicks(me, CraftPlanner.plan(chosenCells, inv), 1, ContainerSlots.INVENTORY_MENU_START);
+            current = t;
+            CompanionMod.LOG.info(CompanionMod.TAG + "craft started item={} wanted={} recipe={} per_craft={} batches={} grid=2x2", item, wanted,
+                    chosen.getId(), t.perCraft, t.batchesLeft);
+            return;
+        }
+        // 3×3：找工作台，没有就放一个
+        if (!beginStation(t, mc, me, "minecraft:crafting_table", Blocks.CRAFTING_TABLE)) {
+            if (t.opReason == Reason.NO_MATERIALS) {
+                finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of("minecraft:crafting_table", 1))));
+            } else {
+                finish(Result.failed(id, t.opReason == null ? Reason.STUCK : t.opReason, new Result.CraftDetail(0)));
+            }
+            return;
+        }
         current = t;
-        CompanionMod.LOG.info(CompanionMod.TAG + "craft started item={} wanted={} recipe={} per_craft={} batches={} clicks={}", item, wanted,
-                chosen.getId(), t.perCraft, t.batchesLeft, t.clicks.size());
+        CompanionMod.LOG.info(CompanionMod.TAG + "craft started item={} wanted={} recipe={} per_craft={} batches={} grid=3x3 station={} self_placed={}",
+                item, wanted, chosen.getId(), t.perCraft, t.batchesLeft, t.stationPos, t.selfPlaced);
     }
 
     /** 配方的每个格子能放什么，铺到 gridW×gridH 里；铺不下返回 null。 */
@@ -550,10 +599,10 @@ public final class Executor implements AbstractGameEventListener {
     }
 
     /**
-     * 把分配好的材料一格一格放进 2×2（背包菜单的格子 1–4），最后 shift 点结果格（0）。
-     * 每个格子三下：拿起材料叠 → 右键放一个 → 把剩下的放回去。
+     * 把分配好的材料一格一格放进合成格（gridBase 起），最后 shift 点结果格（0）。
+     * 每个格子三下：拿起材料叠 → 右键放一个 → 把剩下的放回去。invStart 是这个菜单里主背包的起始格。
      */
-    private static ArrayDeque<Click> buildClicks(LocalPlayer me, CraftPlanner.Plan plan) {
+    private static ArrayDeque<Click> buildClicks(LocalPlayer me, CraftPlanner.Plan plan, int gridBase, int invStart) {
         ArrayDeque<Click> q = new ArrayDeque<>();
         int[] left = new int[36];
         var items = me.getInventory().items;
@@ -576,49 +625,400 @@ public final class Executor implements AbstractGameEventListener {
                 return new ArrayDeque<>(); // 不该发生：plan 刚算过材料够
             }
             left[src]--;
-            int srcSlot = ThrowPlan.slotFor(src);
+            int srcSlot = ContainerSlots.slotFor(src, invStart);
             q.add(new Click(srcSlot, 0, ClickType.PICKUP));
-            q.add(new Click(1 + g, 1, ClickType.PICKUP));
+            q.add(new Click(gridBase + g, 1, ClickType.PICKUP));
             q.add(new Click(srcSlot, 0, ClickType.PICKUP));
         }
         q.add(new Click(0, 0, ClickType.QUICK_MOVE));
         return q;
     }
 
-    private void tickCraft(Minecraft mc, LocalPlayer me) {
-        Task t = current;
+    /**
+     * 合成的点击推进：一 tick 一下；点完等成品进背包；多份就重算再摆。
+     * 返回 null = 还在做；返回 Result = 做完了（ok 或 failed），由调用方决定怎么收尾。
+     */
+    private Result stepCraft(Task t, Minecraft mc, LocalPlayer me, int containerId, int gridBase, int invStart) {
         if (!t.clicks.isEmpty()) {
             Click c = t.clicks.poll();
-            mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId, c.slot(), c.button(), c.type(), me);
+            mc.gameMode.handleInventoryMouseClick(containerId, c.slot(), c.button(), c.type(), me);
             if (t.clicks.isEmpty()) {
                 t.waitSince = tick;
             }
-            return;
+            return null;
         }
         int now = countItem(me, t.item);
         if (now >= t.batchStartCount + t.perCraft) {
             t.batchesLeft--;
             send(MessageType.PROGRESS, new Progress(t.id, "crafted", (double) (now - t.startCount), Observer.pos(me)));
             if (t.batchesLeft <= 0) {
-                finish(Result.ok(t.id, new Result.CraftDetail(now - t.startCount)));
-                return;
+                return Result.ok(t.id, new Result.CraftDetail(now - t.startCount));
             }
             CraftPlanner.Plan plan = CraftPlanner.plan(t.cells, inventorySummary(me));
             if (!plan.ok()) {
                 CompanionMod.LOG.info(CompanionMod.TAG + "craft: ran out after {} ({})", now - t.startCount, plan.missing());
-                finish(Result.failed(t.id, Reason.NO_MATERIALS, new Result.CraftDetail(now - t.startCount, plan.missing())));
-                return;
+                return Result.failed(t.id, Reason.NO_MATERIALS, new Result.CraftDetail(now - t.startCount, plan.missing()));
             }
             t.batchStartCount = now;
-            t.clicks = buildClicks(me, plan);
+            t.clicks = buildClicks(me, plan, gridBase, invStart);
             t.waitSince = -1;
-            return;
+            return null;
         }
         if (t.waitSince >= 0 && tick - t.waitSince >= CRAFT_RESULT_WAIT_TICKS) {
             CompanionMod.LOG.info(CompanionMod.TAG + "craft: result never arrived (have {} want {}) -> stuck", now, t.batchStartCount + t.perCraft);
-            finish(Result.failed(t.id, Reason.STUCK, new Result.CraftDetail(now - t.startCount)));
+            return Result.failed(t.id, Reason.STUCK, new Result.CraftDetail(now - t.startCount));
+        }
+        return null;
+    }
+
+    private void tickCraft(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        if (!t.useTable) {
+            Result r = stepCraft(t, mc, me, me.inventoryMenu.containerId, 1, ContainerSlots.INVENTORY_MENU_START);
+            if (r != null) {
+                finish(r);
+            }
+            return;
+        }
+        switch (t.phase) {
+            case STATION_PLACE, STATION_APPROACH, STATION_OPEN -> {
+                if (tickStation(t, mc, me, CraftingMenu.class)) {
+                    t.clicks = buildClicks(me, CraftPlanner.plan(t.cells, inventorySummary(me)), 1, ContainerSlots.CRAFTING_MENU_START);
+                    t.batchStartCount = countItem(me, t.item);
+                    t.waitSince = -1;
+                    t.phase = Phase.TABLE_CRAFT;
+                }
+            }
+            case TABLE_CRAFT -> {
+                if (!(me.containerMenu instanceof CraftingMenu)) {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "craft: crafting menu closed under us -> stuck");
+                    endStation(t, mc, me, Result.failed(t.id, Reason.STUCK, new Result.CraftDetail(countItem(me, t.item) - t.startCount)));
+                    return;
+                }
+                Result r = stepCraft(t, mc, me, me.containerMenu.containerId, 1, ContainerSlots.CRAFTING_MENU_START);
+                if (r != null) {
+                    endStation(t, mc, me, r);
+                }
+            }
+            case STATION_PICKUP -> tickStationPickup(t, mc, me);
+            default -> {
+            }
         }
     }
+
+    // ---- 工作台 / 熔炉共用：找、放、走过去、打开、收回 ----
+
+    /**
+     * 找 8 格内的 station（工作台 / 熔炉）；没有但背包有就放一个（记为自己放的）。
+     * 返回 false 表示没法开始，原因在 t.opReason（NO_MATERIALS = 没有也没带；其他 = 放不下）。
+     */
+    private boolean beginStation(Task t, Minecraft mc, LocalPlayer me, String blockId, Block block) {
+        BlockPos found = findNearestBlock(mc, me.blockPosition(), block, STATION_RADIUS);
+        if (found != null) {
+            t.stationPos = found;
+            t.selfPlaced = false;
+            double dist = me.position().distanceTo(Vec3.atCenterOf(found));
+            IBaritone b = BaritoneBridge.baritone();
+            if (dist > 3.5 && b != null) {
+                t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+                setGoal(b, t, found, 2);
+                t.phase = Phase.STATION_APPROACH;
+            } else {
+                t.phase = Phase.STATION_OPEN;
+                t.openSince = -1;
+            }
+            return true;
+        }
+        if (findInventoryIndex(me, blockId) < 0) {
+            t.opReason = Reason.NO_MATERIALS;
+            return false;
+        }
+        int rc = beginPlaceOp(t, mc, me, blockId);
+        if (rc != 0) {
+            t.opReason = Reason.STUCK;
+            return false;
+        }
+        t.selfPlaced = true;
+        t.phase = Phase.STATION_PLACE;
+        return true;
+    }
+
+    /** 推进 放 → 走过去 → 打开菜单；菜单打开（类型是 menuType）返回 true；失败自己收尾。 */
+    private boolean tickStation(Task t, Minecraft mc, LocalPlayer me, Class<?> menuType) {
+        IBaritone b = BaritoneBridge.baritone();
+        switch (t.phase) {
+            case STATION_PLACE -> {
+                OpState st = tickPlaceOp(t, mc, me);
+                if (st == OpState.DONE) {
+                    t.stationPos = t.opPos;
+                    placedBlocks.put(t.opBlockId, t.opPos);
+                    t.phase = Phase.STATION_OPEN;
+                    t.openSince = -1;
+                } else if (st == OpState.FAILED) {
+                    finish(Result.failed(t.id, t.opReason == null ? Reason.STUCK : t.opReason));
+                }
+            }
+            case STATION_APPROACH -> {
+                double dist = me.position().distanceTo(Vec3.atCenterOf(t.stationPos));
+                if (dist <= 3.5) {
+                    BaritoneBridge.cancelEverything();
+                    t.phase = Phase.STATION_OPEN;
+                    t.openSince = -1;
+                    return false;
+                }
+                if (t.pathFailed) {
+                    BaritoneBridge.cancelEverything();
+                    finish(Result.failed(t.id, Reason.PATH_FAILED));
+                    return false;
+                }
+                if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
+                    BaritoneBridge.cancelEverything();
+                    finish(Result.failed(t.id, Reason.STUCK));
+                    return false;
+                }
+                if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS
+                        && !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive()) {
+                    setGoal(b, t, t.stationPos, 2);
+                }
+            }
+            case STATION_OPEN -> {
+                if (t.openSince < 0) {
+                    useBlock(mc, me, t.stationPos);
+                    t.openSince = tick;
+                    return false;
+                }
+                if (menuType.isInstance(me.containerMenu)) {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "station menu open {} id={}", menuType.getSimpleName(), me.containerMenu.containerId);
+                    return true;
+                }
+                if (tick - t.openSince >= MENU_OPEN_TIMEOUT_TICKS) {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "station: menu did not open at {} -> stuck", t.stationPos);
+                    finish(Result.failed(t.id, Reason.STUCK));
+                }
+            }
+            default -> {
+            }
+        }
+        return false;
+    }
+
+    /** 关菜单；自己放的 station 先挖回来再回结果。 */
+    private void endStation(Task t, Minecraft mc, LocalPlayer me, Result r) {
+        me.closeContainer();
+        if (t.selfPlaced && t.stationPos != null) {
+            t.pending = r;
+            Block block = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(t.opBlockId));
+            beginBreakOp(t, mc, me, t.opBlockId, block, t.stationPos);
+            t.phase = Phase.STATION_PICKUP;
+            return;
+        }
+        finish(r);
+    }
+
+    private void tickStationPickup(Task t, Minecraft mc, LocalPlayer me) {
+        OpState st = tickBreakOp(t, mc, me);
+        if (st == OpState.RUNNING) {
+            return;
+        }
+        if (st == OpState.FAILED) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "station: could not pick {} back up ({}), leaving it recorded", t.opBlockId, t.opReason);
+        } else {
+            placedBlocks.remove(t.opBlockId);
+        }
+        finish(t.pending);
+    }
+
+    /** 对一个方块"右键"（打开工作台 / 熔炉）：从伙伴这一侧的面点进去。 */
+    private static void useBlock(Minecraft mc, LocalPlayer me, BlockPos pos) {
+        Vec3 center = Vec3.atCenterOf(pos);
+        Direction face = Direction.getNearest(me.getX() - center.x, me.getEyeY() - center.y, me.getZ() - center.z);
+        Vec3 hit = center.add(face.getStepX() * 0.5, face.getStepY() * 0.5, face.getStepZ() * 0.5);
+        var res = mc.gameMode.useItemOn(me, InteractionHand.MAIN_HAND, new BlockHitResult(hit, face, pos, false));
+        me.swing(InteractionHand.MAIN_HAND);
+        CompanionMod.LOG.info(CompanionMod.TAG + "useBlock {} face={} -> {}", pos, face, res);
+    }
+
+    static BlockPos findNearestBlock(Minecraft mc, BlockPos center, Block block, int radius) {
+        BlockPos best = null;
+        double bestD = Double.MAX_VALUE;
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        for (int x = center.getX() - radius; x <= center.getX() + radius; x++) {
+            for (int y = center.getY() - radius; y <= center.getY() + radius; y++) {
+                for (int z = center.getZ() - radius; z <= center.getZ() + radius; z++) {
+                    if (mc.level.getBlockState(p.set(x, y, z)).is(block)) {
+                        double d = center.distSqr(p);
+                        if (d < bestD) {
+                            bestD = d;
+                            best = p.immutable();
+                        }
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    // ---- 子动作：放一个方块 ----
+
+    /** 0 = 开始了；1 = 背包里没有；2 = 脚边没空位。 */
+    private int beginPlaceOp(Task t, Minecraft mc, LocalPlayer me, String blockId) {
+        int src = findInventoryIndex(me, blockId);
+        if (src < 0) {
+            return 1;
+        }
+        BlockPos feet = me.blockPosition();
+        PlaceSpot.Cell spot = PlaceSpot.pick(new PlaceSpot.Cell(feet.getX(), feet.getY(), feet.getZ()),
+                c -> {
+                    var st = mc.level.getBlockState(new BlockPos(c.x(), c.y(), c.z()));
+                    return st.isAir() || st.canBeReplaced();
+                },
+                c -> {
+                    BlockPos bp = new BlockPos(c.x(), c.y(), c.z());
+                    return mc.level.getBlockState(bp).isFaceSturdy(mc.level, bp, Direction.UP);
+                }).orElse(null);
+        if (spot == null) {
+            return 2;
+        }
+        t.opBlockId = blockId;
+        t.opPos = new BlockPos(spot.x(), spot.y(), spot.z());
+        if (src < 9) {
+            me.getInventory().selected = src;
+        } else {
+            mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId, ContainerSlots.slotFor(src, ContainerSlots.INVENTORY_MENU_START),
+                    PLACE_HOTBAR_SLOT, ClickType.SWAP, me);
+            me.getInventory().selected = PLACE_HOTBAR_SLOT;
+        }
+        t.opStage = 1;
+        t.opStartTick = tick;
+        CompanionMod.LOG.info(CompanionMod.TAG + "place op: {} at {} from slot {}", blockId, t.opPos, src);
+        return 0;
+    }
+
+    private OpState tickPlaceOp(Task t, Minecraft mc, LocalPlayer me) {
+        if (t.opStage == 1) {
+            if (tick - t.opStartTick < PLACE_SETTLE_TICKS) {
+                return OpState.RUNNING;
+            }
+            ItemStack held = me.getMainHandItem();
+            if (!t.opBlockId.equals(idOf(held))) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "place op: hand holds {} not {} -> stuck", idOf(held), t.opBlockId);
+                t.opReason = Reason.STUCK;
+                return OpState.FAILED;
+            }
+            BlockPos below = t.opPos.below();
+            Vec3 hit = new Vec3(below.getX() + 0.5, below.getY() + 1.0, below.getZ() + 0.5);
+            BreakGuard.allowPlace("place " + t.opBlockId);
+            var res = mc.gameMode.useItemOn(me, InteractionHand.MAIN_HAND, new BlockHitResult(hit, Direction.UP, below, false));
+            me.swing(InteractionHand.MAIN_HAND);
+            CompanionMod.LOG.info(CompanionMod.TAG + "place op: useItemOn -> {}", res);
+            t.opStage = 2;
+            t.opStartTick = tick;
+            return OpState.RUNNING;
+        }
+        Block block = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(t.opBlockId));
+        if (block != null && mc.level.getBlockState(t.opPos).is(block)) {
+            BreakGuard.closeAll("placed " + t.opBlockId);
+            return OpState.DONE;
+        }
+        if (tick - t.opStartTick >= PLACE_CONFIRM_TICKS) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "place op: block did not appear at {} -> stuck", t.opPos);
+            BreakGuard.closeAll("place failed");
+            t.opReason = Reason.STUCK;
+            return OpState.FAILED;
+        }
+        return OpState.RUNNING;
+    }
+
+    // ---- 子动作：把自己放的方块挖回来 ----
+
+    private void beginBreakOp(Task t, Minecraft mc, LocalPlayer me, String blockId, Block block, BlockPos pos) {
+        t.opBlockId = blockId;
+        t.opBlock = block;
+        t.opPos = pos;
+        t.opStartCount = countItem(me, blockId);
+        t.opBreaking = false;
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        t.opStartTick = tick;
+        double dist = me.position().distanceTo(Vec3.atCenterOf(pos));
+        IBaritone b = BaritoneBridge.baritone();
+        if (dist > 4.0 && b != null) {
+            t.opStage = 0; // 走过去
+            setGoal(b, t, pos, 2);
+        } else {
+            t.opStage = 1; // 挖
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "break op: {} at {} dist={}", blockId, pos, round(dist));
+    }
+
+    private OpState tickBreakOp(Task t, Minecraft mc, LocalPlayer me) {
+        IBaritone b = BaritoneBridge.baritone();
+        switch (t.opStage) {
+            case 0 -> {
+                double dist = me.position().distanceTo(Vec3.atCenterOf(t.opPos));
+                if (dist <= 3.5) {
+                    BaritoneBridge.cancelEverything();
+                    t.opStage = 1;
+                    t.opStartTick = tick;
+                    return OpState.RUNNING;
+                }
+                if (t.pathFailed) {
+                    BaritoneBridge.cancelEverything();
+                    t.opReason = Reason.PATH_FAILED;
+                    return OpState.FAILED;
+                }
+                if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
+                    BaritoneBridge.cancelEverything();
+                    t.opReason = Reason.STUCK;
+                    return OpState.FAILED;
+                }
+                if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS
+                        && !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive()) {
+                    setGoal(b, t, t.opPos, 2);
+                }
+            }
+            case 1 -> {
+                if (mc.level.getBlockState(t.opPos).isAir()) {
+                    mc.gameMode.stopDestroyBlock();
+                    t.opBreaking = false;
+                    t.opStage = 2;
+                    t.opStartTick = tick;
+                    if (b != null) {
+                        b.getCustomGoalProcess().setGoalAndPath(new GoalNear(t.opPos, 0)); // 走过去把掉落捡起来
+                    }
+                    return OpState.RUNNING;
+                }
+                if (!t.opBreaking) {
+                    BreakGuard.allowBreakOnly(List.of(t.opBlock), "break op " + t.opBlockId);
+                    mc.gameMode.startDestroyBlock(t.opPos, Direction.UP);
+                    t.opBreaking = true;
+                }
+                mc.gameMode.continueDestroyBlock(t.opPos, Direction.UP);
+                me.swing(InteractionHand.MAIN_HAND);
+                if (tick - t.opStartTick >= BREAK_TIMEOUT_TICKS) {
+                    mc.gameMode.stopDestroyBlock();
+                    CompanionMod.LOG.info(CompanionMod.TAG + "break op: still not broken after {} ticks -> stuck", BREAK_TIMEOUT_TICKS);
+                    t.opReason = Reason.STUCK;
+                    return OpState.FAILED;
+                }
+            }
+            case 2 -> {
+                if (countItem(me, t.opBlockId) > t.opStartCount) {
+                    BaritoneBridge.cancelEverything();
+                    return OpState.DONE;
+                }
+                if (tick - t.opStartTick >= PICK_TIMEOUT_TICKS) {
+                    BaritoneBridge.cancelEverything();
+                    t.opReason = Reason.NOT_PICKED;
+                    return OpState.FAILED;
+                }
+            }
+            default -> {
+            }
+        }
+        return OpState.RUNNING;
+    }
+
+    // ---- place / pickup_block 命令（第一批）：套用上面两个子动作 ----
 
     private void startPlace(String id, JsonObject args, Minecraft mc) {
         cancelCurrent();
@@ -631,75 +1031,28 @@ public final class Executor implements AbstractGameEventListener {
             finish(Result.failed(id, Reason.NOT_ALLOWED));
             return;
         }
-        LocalPlayer me = mc.player;
-        int src = findInventoryIndex(me, blockId);
-        if (src < 0) {
+        Task t = new Task(id, CommandName.PLACE, args, tick);
+        int rc = beginPlaceOp(t, mc, mc.player, blockId);
+        if (rc == 1) {
             finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of(blockId, 1))));
             return;
         }
-        BlockPos feet = me.blockPosition();
-        PlaceSpot.Cell spot = PlaceSpot.pick(new PlaceSpot.Cell(feet.getX(), feet.getY(), feet.getZ()),
-                c -> {
-                    var st = mc.level.getBlockState(new BlockPos(c.x(), c.y(), c.z()));
-                    return st.isAir() || st.canBeReplaced();
-                },
-                c -> {
-                    BlockPos p = new BlockPos(c.x(), c.y(), c.z());
-                    return mc.level.getBlockState(p).isFaceSturdy(mc.level, p, Direction.UP);
-                }).orElse(null);
-        if (spot == null) {
+        if (rc == 2) {
             CompanionMod.LOG.info(CompanionMod.TAG + "place: no free spot next to feet -> stuck");
             finish(Result.failed(id, Reason.STUCK));
             return;
         }
-        Task t = new Task(id, CommandName.PLACE, args, tick);
-        t.blockId = blockId;
-        t.placePos = new BlockPos(spot.x(), spot.y(), spot.z());
-        t.placeStage = 0;
-        if (src < 9) {
-            me.getInventory().selected = src;        // 已经在快捷栏，直接选中
-            t.placeStage = 1;
-        } else {
-            mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId, ThrowPlan.slotFor(src), PLACE_HOTBAR_SLOT, ClickType.SWAP, me);
-            me.getInventory().selected = PLACE_HOTBAR_SLOT;
-            t.placeStage = 1;
-        }
-        t.phaseStartTick = tick;
         current = t;
-        CompanionMod.LOG.info(CompanionMod.TAG + "place started block={} at={} from_slot={}", blockId, t.placePos, src);
     }
 
     private void tickPlace(Minecraft mc, LocalPlayer me) {
         Task t = current;
-        if (t.placeStage == 1) {
-            if (tick - t.phaseStartTick < PLACE_SETTLE_TICKS) {
-                return;
-            }
-            ItemStack held = me.getMainHandItem();
-            if (!t.blockId.equals(idOf(held))) {
-                CompanionMod.LOG.info(CompanionMod.TAG + "place: hand holds {} not {} -> stuck", idOf(held), t.blockId);
-                finish(Result.failed(t.id, Reason.STUCK));
-                return;
-            }
-            BlockPos below = t.placePos.below();
-            Vec3 hit = new Vec3(below.getX() + 0.5, below.getY() + 1.0, below.getZ() + 0.5);
-            BreakGuard.allowPlace("place " + t.blockId);
-            var res = mc.gameMode.useItemOn(me, InteractionHand.MAIN_HAND, new BlockHitResult(hit, Direction.UP, below, false));
-            me.swing(InteractionHand.MAIN_HAND);
-            CompanionMod.LOG.info(CompanionMod.TAG + "place: useItemOn -> {}", res);
-            t.placeStage = 2;
-            t.phaseStartTick = tick;
-            return;
-        }
-        Block block = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(t.blockId));
-        if (block != null && mc.level.getBlockState(t.placePos).is(block)) {
-            placedBlocks.put(t.blockId, t.placePos);
-            finish(Result.ok(t.id, new Result.PlaceDetail(new Pos(t.placePos.getX(), t.placePos.getY(), t.placePos.getZ()))));
-            return;
-        }
-        if (tick - t.phaseStartTick >= PLACE_CONFIRM_TICKS) {
-            CompanionMod.LOG.info(CompanionMod.TAG + "place: block did not appear at {} -> stuck", t.placePos);
-            finish(Result.failed(t.id, Reason.STUCK));
+        OpState st = tickPlaceOp(t, mc, me);
+        if (st == OpState.DONE) {
+            placedBlocks.put(t.opBlockId, t.opPos);
+            finish(Result.ok(t.id, new Result.PlaceDetail(new Pos(t.opPos.getX(), t.opPos.getY(), t.opPos.getZ()))));
+        } else if (st == OpState.FAILED) {
+            finish(Result.failed(t.id, t.opReason == null ? Reason.STUCK : t.opReason));
         }
     }
 
@@ -721,91 +1074,161 @@ public final class Executor implements AbstractGameEventListener {
             finish(Result.failed(id, Reason.ITEM_NOT_FOUND));
             return;
         }
-        LocalPlayer me = mc.player;
         Task t = new Task(id, CommandName.PICKUP_BLOCK, args, tick);
-        t.blockId = blockId;
-        t.block = block;
-        t.placePos = pos;
-        t.item = blockId; // 工作台、火把、床掉落的物品和方块同名
-        t.startCount = countItem(me, blockId);
-        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
-        t.phaseStartTick = tick;
-        double dist = me.position().distanceTo(Vec3.atCenterOf(pos));
-        IBaritone b = BaritoneBridge.baritone();
-        if (dist > 4.0 && b != null) {
-            t.phase = Phase.APPROACH;
-            setGoal(b, t, pos, 2);
-        } else {
-            t.phase = Phase.BREAK;
-        }
+        beginBreakOp(t, mc, mc.player, blockId, block, pos);
         current = t;
-        CompanionMod.LOG.info(CompanionMod.TAG + "pickup_block started block={} at={} dist={}", blockId, pos, round(dist));
     }
 
     private void tickPickupBlock(Minecraft mc, LocalPlayer me) {
         Task t = current;
-        IBaritone b = BaritoneBridge.baritone();
+        OpState st = tickBreakOp(t, mc, me);
+        if (st == OpState.DONE) {
+            placedBlocks.remove(t.opBlockId);
+            finish(Result.ok(t.id, new Result.PlaceDetail(new Pos(t.opPos.getX(), t.opPos.getY(), t.opPos.getZ()))));
+        } else if (st == OpState.FAILED) {
+            if (t.opReason == Reason.NOT_PICKED) {
+                placedBlocks.remove(t.opBlockId);
+            }
+            finish(Result.failed(t.id, t.opReason == null ? Reason.STUCK : t.opReason));
+        }
+    }
+
+    // ---- use_furnace（第二批） ----
+
+    private void startUseFurnace(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        BaritoneBridge.cancelEverything();
+        send(MessageType.ACK, Ack.accepted(id));
+        Command.UseFurnaceArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.UseFurnaceArgs.class);
+        LocalPlayer me = mc.player;
+        String input = normalizeItem(a == null ? null : a.input());
+        Map<String, Integer> inv = inventorySummary(me);
+        if (input == null || inv.getOrDefault(input, 0) <= 0) {
+            finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of(input == null ? "input" : input, 1))));
+            return;
+        }
+        String requested = a == null ? null : normalizeItem(a.fuel());
+        String fuel = FurnaceLoader.pickFuel(inv, requested).orElse(null);
+        if (fuel == null) {
+            finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of(requested == null ? "minecraft:coal" : requested, 1))));
+            return;
+        }
+        if (me.containerMenu != me.inventoryMenu) {
+            me.closeContainer();
+        }
+        Task t = new Task(id, CommandName.USE_FURNACE, args, tick);
+        t.item = input;
+        t.fuelId = fuel;
+        t.smeltCount = a == null ? null : a.count();
+        if (!beginStation(t, mc, me, "minecraft:furnace", Blocks.FURNACE)) {
+            if (t.opReason == Reason.NO_MATERIALS) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "use_furnace: no furnace nearby and none in inventory -> item_not_found");
+                finish(Result.failed(id, Reason.ITEM_NOT_FOUND, new Result.UseFurnaceDetail(0)));
+            } else {
+                finish(Result.failed(id, Reason.STUCK, new Result.UseFurnaceDetail(0)));
+            }
+            return;
+        }
+        current = t;
+        CompanionMod.LOG.info(CompanionMod.TAG + "use_furnace started input={} fuel={} count={} station={} self_placed={}", input, fuel,
+                t.smeltCount, t.stationPos, t.selfPlaced);
+    }
+
+    /** 装料：原料（全部或 count 个）进格 0，燃料一叠进格 1。 */
+    private ArrayDeque<Click> buildFurnaceLoad(LocalPlayer me, Task t) {
+        ArrayDeque<Click> q = new ArrayDeque<>();
+        var items = me.getInventory().items;
+        int invStart = ContainerSlots.FURNACE_MENU_START;
+        if (t.smeltCount == null) {
+            for (int i = 0; i < 36; i++) {
+                if (t.item.equals(idOf(items.get(i)))) {
+                    q.add(new Click(ContainerSlots.slotFor(i, invStart), 0, ClickType.QUICK_MOVE));
+                }
+            }
+        } else {
+            int need = Math.max(1, t.smeltCount);
+            for (int i = 0; i < 36 && need > 0; i++) {
+                ItemStack st = items.get(i);
+                if (!t.item.equals(idOf(st))) {
+                    continue;
+                }
+                int take = Math.min(need, st.getCount());
+                int slot = ContainerSlots.slotFor(i, invStart);
+                q.add(new Click(slot, 0, ClickType.PICKUP));
+                for (int k = 0; k < take; k++) {
+                    q.add(new Click(AbstractFurnaceMenu.INGREDIENT_SLOT, 1, ClickType.PICKUP));
+                }
+                q.add(new Click(slot, 0, ClickType.PICKUP));
+                need -= take;
+            }
+        }
+        for (int i = 0; i < 36; i++) {
+            if (t.fuelId.equals(idOf(items.get(i)))) {
+                q.add(new Click(ContainerSlots.slotFor(i, invStart), 0, ClickType.QUICK_MOVE));
+                break;
+            }
+        }
+        return q;
+    }
+
+    private void tickUseFurnace(Minecraft mc, LocalPlayer me) {
+        Task t = current;
         switch (t.phase) {
-            case APPROACH -> {
-                double dist = me.position().distanceTo(Vec3.atCenterOf(t.placePos));
-                if (dist <= 3.5) {
-                    BaritoneBridge.cancelEverything();
-                    t.phase = Phase.BREAK;
-                    t.phaseStartTick = tick;
-                    return;
-                }
-                if (t.pathFailed) {
-                    BaritoneBridge.cancelEverything();
-                    finish(Result.failed(t.id, Reason.PATH_FAILED));
-                    return;
-                }
-                if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
-                    BaritoneBridge.cancelEverything();
-                    finish(Result.failed(t.id, Reason.STUCK));
-                    return;
-                }
-                if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS
-                        && !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive()) {
-                    setGoal(b, t, t.placePos, 2);
+            case STATION_PLACE, STATION_APPROACH, STATION_OPEN -> {
+                if (tickStation(t, mc, me, AbstractFurnaceMenu.class)) {
+                    t.clicks = buildFurnaceLoad(me, t);
+                    t.phase = Phase.FURNACE_LOAD;
+                    CompanionMod.LOG.info(CompanionMod.TAG + "use_furnace: loading with {} clicks", t.clicks.size());
                 }
             }
-            case BREAK -> {
-                if (mc.level.getBlockState(t.placePos).isAir()) {
-                    mc.gameMode.stopDestroyBlock();
-                    t.breaking = false;
-                    t.phase = Phase.PICK;
-                    t.phaseStartTick = tick;
-                    if (b != null) {
-                        b.getCustomGoalProcess().setGoalAndPath(new GoalNear(t.placePos, 0)); // 走过去把掉落捡起来
+            case FURNACE_LOAD -> {
+                if (!(me.containerMenu instanceof AbstractFurnaceMenu)) {
+                    endStation(t, mc, me, Result.failed(t.id, Reason.STUCK, new Result.UseFurnaceDetail(t.smelted)));
+                    return;
+                }
+                if (!t.clicks.isEmpty()) {
+                    Click c = t.clicks.poll();
+                    mc.gameMode.handleInventoryMouseClick(me.containerMenu.containerId, c.slot(), c.button(), c.type(), me);
+                    return;
+                }
+                t.phase = Phase.FURNACE_WAIT;
+                t.lastCheckTick = tick;
+                t.unlitSince = -1;
+            }
+            case FURNACE_WAIT -> {
+                if (!(me.containerMenu instanceof AbstractFurnaceMenu menu)) {
+                    endStation(t, mc, me, Result.failed(t.id, Reason.STUCK, new Result.UseFurnaceDetail(t.smelted)));
+                    return;
+                }
+                if (tick - t.lastCheckTick < FURNACE_CHECK_TICKS) {
+                    return;
+                }
+                t.lastCheckTick = tick;
+                ItemStack result = menu.getSlot(AbstractFurnaceMenu.RESULT_SLOT).getItem();
+                if (!result.isEmpty()) {
+                    t.smelted += result.getCount();
+                    mc.gameMode.handleInventoryMouseClick(menu.containerId, AbstractFurnaceMenu.RESULT_SLOT, 0, ClickType.QUICK_MOVE, me);
+                    send(MessageType.PROGRESS, new Progress(t.id, "smelted", (double) t.smelted, Observer.pos(me)));
+                    return;
+                }
+                ItemStack inputLeft = menu.getSlot(AbstractFurnaceMenu.INGREDIENT_SLOT).getItem();
+                if (inputLeft.isEmpty()) {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "use_furnace: done, smelted {}", t.smelted);
+                    endStation(t, mc, me, Result.ok(t.id, new Result.UseFurnaceDetail(t.smelted)));
+                    return;
+                }
+                if (!menu.isLit()) {
+                    if (t.unlitSince < 0) {
+                        t.unlitSince = tick;
+                    } else if (tick - t.unlitSince >= FURNACE_UNLIT_TICKS && menu.getSlot(AbstractFurnaceMenu.FUEL_SLOT).getItem().isEmpty()) {
+                        CompanionMod.LOG.info(CompanionMod.TAG + "use_furnace: fuel ran out with {} left, smelted {}", inputLeft.getCount(), t.smelted);
+                        endStation(t, mc, me, Result.failed(t.id, Reason.NO_MATERIALS, new Result.UseFurnaceDetail(t.smelted)));
                     }
-                    return;
-                }
-                if (!t.breaking) {
-                    BreakGuard.allowBreakOnly(List.of(t.block), "pickup_block " + t.blockId);
-                    mc.gameMode.startDestroyBlock(t.placePos, Direction.UP);
-                    t.breaking = true;
-                }
-                mc.gameMode.continueDestroyBlock(t.placePos, Direction.UP);
-                me.swing(InteractionHand.MAIN_HAND);
-                if (tick - t.phaseStartTick >= BREAK_TIMEOUT_TICKS) {
-                    mc.gameMode.stopDestroyBlock();
-                    CompanionMod.LOG.info(CompanionMod.TAG + "pickup_block: still not broken after {} ticks -> stuck", BREAK_TIMEOUT_TICKS);
-                    finish(Result.failed(t.id, Reason.STUCK));
+                } else {
+                    t.unlitSince = -1;
                 }
             }
-            case PICK -> {
-                if (countItem(me, t.item) > t.startCount) {
-                    BaritoneBridge.cancelEverything();
-                    placedBlocks.remove(t.blockId);
-                    finish(Result.ok(t.id, new Result.PlaceDetail(new Pos(t.placePos.getX(), t.placePos.getY(), t.placePos.getZ()))));
-                    return;
-                }
-                if (tick - t.phaseStartTick >= PICK_TIMEOUT_TICKS) {
-                    BaritoneBridge.cancelEverything();
-                    placedBlocks.remove(t.blockId);
-                    finish(Result.failed(t.id, Reason.NOT_PICKED));
-                }
-            }
+            case STATION_PICKUP -> tickStationPickup(t, mc, me);
             default -> {
             }
         }
@@ -1380,15 +1803,18 @@ public final class Executor implements AbstractGameEventListener {
     private void finish(Result r) {
         CompanionMod.LOG.info(CompanionMod.TAG + "result {} {} {}", r.commandId(), r.status(), r.reason() == null ? "" : r.reason().wire());
         send(MessageType.RESULT, r);
-        if (current != null && current.name == CommandName.CRAFT) {
-            closeInventoryGrid();
+        if (current != null) {
+            closeMenuIfOpen(current);
         }
         current = null;
         BreakGuard.closeAll("result " + r.status());
     }
 
-    /** 合成结束（不管成没成）：发一次"关背包"，服务器会把 2×2 里剩的材料退回背包。 */
-    private static void closeInventoryGrid() {
+    /** 合成 / 烧东西结束（不管成没成）：发一次"关容器"，服务器会把格子里剩的材料退回背包、关掉界面。 */
+    private static void closeMenuIfOpen(Task t) {
+        if (t.name != CommandName.CRAFT && t.name != CommandName.USE_FURNACE) {
+            return;
+        }
         LocalPlayer me = Minecraft.getInstance().player;
         if (me != null) {
             me.closeContainer();
