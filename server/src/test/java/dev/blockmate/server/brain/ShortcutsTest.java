@@ -40,5 +40,7 @@ class ShortcutsTest {
         assertEquals("home", Shortcuts.argsFor(CommandName.REMEMBER_PLACE).get("name").getAsString());
         assertEquals(0, Shortcuts.argsFor(CommandName.GO_HOME).size());
         assertTrue(Shortcuts.match("回家路上顺便砍树").isEmpty(), "带别的内容的交给模型");
+        assertEquals(CommandName.SLEEP, Shortcuts.match("去睡觉！").orElseThrow());
+        assertEquals(CommandName.EAT, Shortcuts.match("吃点东西。").orElseThrow());
     }
 }

@@ -112,7 +112,7 @@ hub 的回复（三个通道相同骨架）：
 
 对 ui，回复的 body 还带 `status`（同第 8 节）和 `history`（最近 N 条 messages，N 来自 config）。对 keeper，还带 `desired`（`running` / `stopped`）。`ok:false` 之后 hub 立刻以 4401 关闭。
 
-对 mc，回复的 body 还带 `rules`（任务单 12）：`{"mineable": ["minecraft:oak_log", …], "placeable": ["minecraft:crafting_table", …], "drops": {"minecraft:stone": "minecraft:cobblestone", …}}`（drops 是任务单 13 加的"方块到掉落物"对照，模组按它数挖够了没有；老后台不发时模组当空表），内容来自 `knowledge/blocks.yaml` 的三段（hub 按修改时间热重载，id 统一补 `minecraft:` 小写；文件缺失或坏了就发空清单）。模组只认这一份，不自己读文件；没收到 `rules` 或清单为空 = 什么都不许挖、不许放。模组收到后在 latest.log 打一行"收到白名单 可挖=N 可放=M"，hub 日志 `executor online … rules mineable=N placeable=M`。改了 blocks.yaml 要让伙伴下线再上线才拿到新清单。
+对 mc，回复的 body 还带 `rules`（任务单 12）：`{"mineable": ["minecraft:oak_log", …], "placeable": ["minecraft:crafting_table", …], "drops": {"minecraft:stone": "minecraft:cobblestone", …}}`（drops 是任务单 13 加的"方块到掉落物"对照，模组按它数挖够了没有；老后台不发时模组当空表；任务单 15 再加 `"avoid_food": ["minecraft:rotten_flesh", …]`，来自 `knowledge/food.yaml` 的 avoid 段），内容来自 `knowledge/blocks.yaml` 的三段（hub 按修改时间热重载，id 统一补 `minecraft:` 小写；文件缺失或坏了就发空清单）。模组只认这一份，不自己读文件；没收到 `rules` 或清单为空 = 什么都不许挖、不许放。模组收到后在 latest.log 打一行"收到白名单 可挖=N 可放=M"，hub 日志 `executor online … rules mineable=N placeable=M`。改了 blocks.yaml 要让伙伴下线再上线才拿到新清单。
 
 mock-executor 的 hello 与真模组相同，只是 `mod_version` 写 `mock`。
 
@@ -169,9 +169,12 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | disconnected | reason | 连接断开 |
 | joined | — | 进入世界完成（重连 / 重生后，先发一条完整 snapshot，再发 joined） |
 | inventory_change | item, delta, count | 某物品数量变化；捡到为正，丢出为负 |
+| auto_eat | item, count | 任务单 15：没人叫、自己吃了一口；count 放吃完后的饥饿值 |
+| bed_collected | pos, dim | 任务单 15：睡醒后把自己放的床收回来了 |
 
 【补丁 2026-10-22】模组侧两条行为：
 - 死亡画面停留 3 秒后模组自动"重生"（和按钮做的事一样），所以 death 之后会跟着 respawn + snapshot + joined；挂机被怪杀死不会一直停在死亡画面。画面一直不消失就每 3 秒再按一次。
+- 【任务单 15】两条被动行为（不经过命令，模组自己做，做了发事件）：饥饿 ≤ 14 且当前没有任务 → 自动吃一次（有任务等任务结束；没食物 30 秒后再看）；重生后 hub 收到 respawn 事件等 2 秒做决定——主人在线（RCON 或快照里看得见）派 come_here，不在但记过 home 派 go_home，都没有就待着（日志 `respawn_decision owner_here= home_known= action=`）。
 - 被踢 / 掉线后的自动重连（10 秒 × 5 次）对"服务器明确拒绝"的原因不生效：翻译键为 not_whitelisted、banned、banned.reason、banned_ip.reason、outdated_client、outdated_server、incompatible、unverified_username、name_taken、invalid_player_data 时直接放弃，日志写 `rejoin: not retrying`。被管理员 kick、服务器满、服务器重启仍会重连。
 
 ## 7. command / ack / progress / result
@@ -204,8 +207,8 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | craft | item（物品 id），count（默认 1） | 合成；配方问游戏客户端，没有回 no_recipe，材料不够回 no_materials（detail.missing 说缺什么）；需要工作台时模组自己找 8 格内的或放一个再收回。【任务单 14 第一批】只做 2×2 能做的配方：用背包自带的合成格（背包菜单格子 1–4），每个格子三下点击（拿起材料叠、右键放一个、放回剩下的）+ shift 点结果格，全部走 handleInventoryMouseClick 发包；一次做一份，按背包里成品数量增量确认，3 秒没多算 stuck；【第二批】成品只有 3×3 配方（或 2×2 的材料不够而 3×3 的够）时：8 格内找工作台（别人的只用不拆），没有就从背包放一个（记为自己放的），走到 2 格内对它 useItemOn 打开菜单（2 秒内当前菜单没变成工作台菜单回 stuck），把材料摆进格子 1–9、shift 点成品格，做完关菜单（服务器退回剩料），自己放的再挖回来；没工作台也没带回 no_materials（missing crafting_table）。结束时都发一次关容器让服务器退回格子里剩的材料 |
 | place | block（只允许 minecraft:crafting_table / minecraft:torch / 自己的床），pos（可选） | 在脚边或指定位置放方块；别的方块回 not_allowed。【任务单 14】只认 blocks.yaml 的 placeable；背包没有回 no_materials；脚边东南西北四格里第一个"本身空、下面顶面实心"的位置，都没有回 stuck；把物品 SWAP 到快捷栏第 9 格选中，BreakGuard 打开 allowPlace，对下方方块顶面 useItemOn，1 秒内确认方块出现才回 ok（detail pos），并记下位置给 pickup_block；pos 参数暂不支持 |
 | pickup_block | block（默认 minecraft:crafting_table） | 收回自己放过的方块；只收自己放的，位置模组自己记。【任务单 14】没放过或那里已经不是这种方块回 item_not_found；超过 4 格先用 Baritone 走到 2 格内；破坏不用 Baritone 挖矿过程（会去挖别人的），自己对那个坐标发 startDestroyBlock / continueDestroyBlock 直到变空气（BreakGuard 只放行这种方块，10 秒没挖掉回 stuck）；然后走到那格把掉落捡起来，5 秒没捡到回 not_picked；成功 detail pos |
-| eat | item（可选） | 吃 item 或背包里任意食物；没食物回 no_materials |
-| sleep | — | 走到 8 格内的床或记过的 bed 地点睡下；没床回 no_bed，还没到晚上回 not_night |
+| eat | item（可选） | 吃 item 或背包里任意食物；没食物回 no_materials。【任务单 15】食物从游戏认（物品带饱食度），"最差的一份"= 饱食度最低的；knowledge/food.yaml 的 avoid 清单（腐肉、蜘蛛眼、毒马铃薯、河豚、紫颂果、生鸡肉）只有没别的可吃才碰；吃法是把食物换到快捷栏选中、把"使用"键设成按下（和自动吃的模组一样），看到那份少了或饥饿值涨了就松开，回 ok（detail item, food_after）；6 秒没变化回 stuck |
+| sleep | — | 走到 8 格内的床或记过的 bed 地点睡下；没床回 no_bed，还没到晚上回 not_night。【任务单 15】先看时间（12542–23460 之外回 not_night）；8 格内找没人占的床（床头那格），没有但背包有床就放一张（记为自己放的），都没有回 no_bed；走到 2 格内右键床，3 秒内 isSleeping 为真就回 ok（detail slept=true, bed_pos），**躺下就算成功、不等天亮**（多人服要所有人都睡才跳夜，后台 sleep 超时只有 90 秒）；3 秒没躺下（附近有怪、床被占）回 stuck；躺着时收到任何命令先发 STOP_SLEEPING 起床；睡醒后空闲时自动把自己放的床挖回来并发 bed_collected 事件 |
 | go_home | — | 等于 goto place=home；没记过回 no_place_known。【任务单 13】hub 换成坐标后以 goto 下发，计划里仍显示 go_home |
 | remember_place | name，pos（可选，默认当前位置） | 记地点。【任务单 13 改】hub 自己完成、不下发模组：拿最新 snapshot 的 pos / dim 写进 places 表（同名覆盖），合成 result ok（detail {name, pos}）；没有快照（不在世界里）合成 failed no_place_known。名字整理：家 / home / 家里 换成 home，床 / bed 换成 bed。模组不存地点 |
 | use_furnace | input，fuel，count（默认全部） | 用 8 格内的熔炉把 input 烧完并取出；没熔炉回 item_not_found，没燃料回 no_materials。【任务单 14 第二批】背包没 input 回 no_materials（missing input）；fuel 没给按煤、木炭、煤块、木板、原木挑，都没有回 no_materials（missing minecraft:coal）；8 格内没熔炉但背包有就临时放一个（熔炉只在这一步允许放，不进 placeable），用完挖回来（里面剩的一起掉出来捡走）；走到 2 格内打开熔炉菜单（0 原料 1 燃料 2 成品），count 没给就把原料和燃料各 shift 一叠进去，给了就拿起原料叠右键逐个放 count 次；每 2 秒看成品格，有就 shift 取出并发 progress（累计 smelted）；原料格空且成品取完回 ok；原料还有、炉子灭了超过 5 秒且燃料格空回 no_materials 带 smelted；整单 300 秒超时 |
@@ -302,7 +305,7 @@ idle ──command 发出──▶ pending ──ack accepted──▶ running �
 
 【细则】
 
-固定短语表（2026-10-22；任务单 13 加「回家 / 回家吧 / 回家去」对应 go_home，「记住这里是家 / 记住这是家 / 这里是家 / 这里就是家」对应 remember_place name=home）：主人的话去掉标点空格后正好是「停 / 停下 / 停一下 / 别动 / 站住 / 别跟了」→ stop，「等在这 / 等在这里 / 等在这儿 / 在这等 / 在这等我 / 在这儿等 / 等着 / 待着」→ wait_here，「跟我来 / 跟着我 / 跟上 / 跟我走」→ follow，「过来 / 来我这 / 来我这里 / 到我这来」→ come_here 时，hub 直接按模型调了该工具处理（日志 `chat_in … shortcut=…`），不经过模型；带别的内容的句子和其它说法仍交给模型。起因：6.5 第一批"等在这"10 次里 6 次模型只用文字答应没调工具。system 里人设之后固定加一段"动作规则"（PromptBuilder.ACTION_RULE）。
+固定短语表（2026-10-22；任务单 13 加「回家 / 回家吧 / 回家去」对应 go_home，「记住这里是家 / 记住这是家 / 这里是家 / 这里就是家」对应 remember_place name=home；任务单 15 加「去睡觉 / 睡觉 / 睡吧 / 去睡吧」对应 sleep，「吃点东西 / 吃东西 / 吃点什么」对应 eat）：主人的话去掉标点空格后正好是「停 / 停下 / 停一下 / 别动 / 站住 / 别跟了」→ stop，「等在这 / 等在这里 / 等在这儿 / 在这等 / 在这等我 / 在这儿等 / 等着 / 待着」→ wait_here，「跟我来 / 跟着我 / 跟上 / 跟我走」→ follow，「过来 / 来我这 / 来我这里 / 到我这来」→ come_here 时，hub 直接按模型调了该工具处理（日志 `chat_in … shortcut=…`），不经过模型；带别的内容的句子和其它说法仍交给模型。起因：6.5 第一批"等在这"10 次里 6 次模型只用文字答应没调工具。system 里人设之后固定加一段"动作规则"（PromptBuilder.ACTION_RULE）。
 
 提示词顺序（2026-10-22 调整，为了让 Ollama 的前缀缓存命中）：system = persona.md 全文 + 「已确认的偏好」列表 + 「最近 3 条日记」（episodes），**不含**每轮都变的状态句；然后是最近 N 条 messages（role 映射：owner→user，companion→assistant，owner_ingame→user 并加前缀"（游戏里说）"）；最后一条 user = 「现在的状态」（snapshot 摘要）+ 空行 + 「主人说：」+ 这次的输入（动作结束后的内部提示不加"主人说"）。调整前状态句在 system 里，每轮缓存只能复用到人设结尾，后面 1000 多 token 全部重算，首字 9 秒。
 
@@ -399,7 +402,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
 - 最近的任务（任务单 10）：表 `plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id)`，计划结束时写一行；给模型的 system 里带最近 5 个的"日期 目标：结局"。
-- 地点（任务单 13）：表 `places(name PRIMARY KEY, dim, x, y, z, ts)`，remember_place 写入（同名覆盖），goto place / go_home 查它；全部地点进 system 提示。hub 日志 `place_remembered name= dim=`、`place_resolved name= for=`、`place_unknown name= known=`。
+- 地点（任务单 13）：表 `places(name PRIMARY KEY, dim, x, y, z, ts)`，remember_place 写入（同名覆盖），goto place / go_home 查它；全部地点进 system 提示。hub 日志 `place_remembered name= dim=`、`place_resolved name= for=`、`place_unknown name= known=`。任务单 15：sleep 成功时 hub 把 detail.bed_pos 记成 bed，没记过 home 就同时记成 home（日志 `place_remembered name=bed … home_set=`）。
 - 最近 N 条对话：按 ts 倒序取最近 2N 条未删除的 messages，再经 HistoryWindow 做分块滑动：窗口在 N 到 2N 条之间，满 2N 条时一次砍回 N 条，而不是每轮掉一条，这样提示前缀只在每 N 条消息变一次（N 来自 config.history_n，默认 20）。网页 hello 回复里带的 history 仍是最近 N 条。
 
 ## 12. config.yaml 与 persona.md

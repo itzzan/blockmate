@@ -658,6 +658,38 @@ class HubIntegrationTest {
         assertEquals(CommandName.GO_HOME, app.hub().currentPlan().orElseThrow().steps().get(0).command(), "计划里仍是 go_home");
     }
 
+    @Test
+    void 重生后_主人看得见_自动去找主人() throws Exception {
+        // 假执行器的快照里主人一直看得见，所以走"过来"这条；"不在就回家"那条靠单元逻辑和真游戏验
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        memory().savePlace("home", "minecraft:overworld", 10, 64, -20);
+        mocks.get(0).send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.respawn(new dev.blockmate.protocol.Pos(0, 64, 0), "minecraft:overworld")));
+        waitFor(() -> mockConsole.contains("收到 come_here"), 8000, "2 秒后派 come_here：" + mockConsole);
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 8000, "done");
+        assertEquals(CommandName.COME_HERE, app.hub().currentPlan().orElseThrow().steps().get(0).command());
+        assertEquals("重生后去找主人", app.hub().currentPlan().orElseThrow().goal());
+    }
+
+    @Test
+    void 睡成功_记下床的位置和家() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        assertTrue(memory().place("home").isEmpty());
+        ui.send(MessageType.CHAT, new Chat("去睡觉"));
+        waitFor(() -> mockConsole.contains("收到 sleep"), 5000, "固定短语派 sleep");
+        waitFor(() -> memory().place("bed").isPresent(), 8000, "sleep ok 后记了 bed");
+        assertTrue(memory().place("home").isPresent(), "没记过家就顺手记成 home");
+        assertEquals(memory().place("bed").orElseThrow().x(), memory().place("home").orElseThrow().x());
+    }
+
     private static JsonObject planArgs(String stepsJson) {
         JsonObject o = new JsonObject();
         o.addProperty("goal", "去弄 20 根木头回来");

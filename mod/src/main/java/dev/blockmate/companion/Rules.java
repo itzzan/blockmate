@@ -12,26 +12,44 @@ import java.util.Set;
  */
 public final class Rules {
 
-    public static final Rules EMPTY = new Rules(Set.of(), Set.of(), Map.of(), false);
+    public static final Rules EMPTY = new Rules(Set.of(), Set.of(), Map.of(), Set.of(), false);
 
     private final Set<String> mineable;
     private final Set<String> placeable;
     private final Map<String, String> drops;
+    private final Set<String> avoidFood;
     private final boolean received;
 
-    private Rules(Set<String> mineable, Set<String> placeable, Map<String, String> drops, boolean received) {
+    private Rules(Set<String> mineable, Set<String> placeable, Map<String, String> drops, Set<String> avoidFood, boolean received) {
         this.mineable = mineable;
         this.placeable = placeable;
         this.drops = drops;
+        this.avoidFood = avoidFood;
         this.received = received;
     }
 
     public static Rules of(Collection<String> mineable, Collection<String> placeable) {
-        return of(mineable, placeable, null);
+        return of(mineable, placeable, null, null);
     }
 
-    /** @param drops 方块 → 挖掉后得到的物品（任务单 13），可为 null */
     public static Rules of(Collection<String> mineable, Collection<String> placeable, Map<String, String> drops) {
+        return of(mineable, placeable, drops, null);
+    }
+
+    /** 不该吃的食物（任务单 15），只有没别的可吃时才碰。 */
+    public boolean shouldAvoidFood(String itemId) {
+        return avoidFood.contains(normalize(itemId));
+    }
+
+    public Set<String> avoidFood() {
+        return avoidFood;
+    }
+
+    /**
+     * @param drops     方块 → 挖掉后得到的物品（任务单 13），可为 null
+     * @param avoidFood 不该吃的食物（任务单 15），可为 null
+     */
+    public static Rules of(Collection<String> mineable, Collection<String> placeable, Map<String, String> drops, Collection<String> avoidFood) {
         Map<String, String> d = new LinkedHashMap<>();
         if (drops != null) {
             drops.forEach((k, v) -> {
@@ -42,7 +60,7 @@ public final class Rules {
                 }
             });
         }
-        return new Rules(normalizeAll(mineable), normalizeAll(placeable), Map.copyOf(d), true);
+        return new Rules(normalizeAll(mineable), normalizeAll(placeable), Map.copyOf(d), normalizeAll(avoidFood), true);
     }
 
     /** 这种方块挖掉后背包里多的是什么；没写的和方块同名。 */

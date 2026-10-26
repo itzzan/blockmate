@@ -31,6 +31,10 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
+import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.state.properties.BedPart;
+import dev.blockmate.protocol.Event;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -52,7 +56,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin；任务单 13 加 goto / mine / collect；任务单 14 加 craft / place / pickup_block / use_furnace。
+ * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin；任务单 13 加 goto / mine / collect；任务单 14 加 craft / place / pickup_block / use_furnace；任务单 15 加 eat / sleep 和两条被动行为（饿了自动吃、睡醒收床）。
  * 单任务槽：新 command 到达先给旧任务回 result cancelled，再回新任务的 ack。全部在游戏线程上。
  */
 public final class Executor implements AbstractGameEventListener {
@@ -88,11 +92,17 @@ public final class Executor implements AbstractGameEventListener {
     private static final int MENU_OPEN_TIMEOUT_TICKS = 40;   // 对工作台 / 熔炉右键后 2 秒内菜单要打开
     private static final int FURNACE_CHECK_TICKS = 40;       // 每 2 秒看一次熔炉
     private static final int FURNACE_UNLIT_TICKS = 100;      // 原料还在、炉子灭了 5 秒且没燃料 = 燃料用完
+    // 任务单 15
+    private static final int EAT_TIMEOUT_TICKS = 120;        // 按住使用键 6 秒还没吃掉算卡住（吃一口 32 tick）
+    private static final int SLEEP_CONFIRM_TICKS = 60;       // 右键床后 3 秒内要躺下
+    private static final int AUTO_EAT_RETRY_TICKS = 600;     // 自动吃失败（没食物）30 秒后再试
 
     private enum Phase {
         APPROACH, THROW, BACK_OFF, WAIT_CONFIRM, BREAK, PICK,
         // 任务单 14 第二批：工作台 / 熔炉
-        STATION_PLACE, STATION_APPROACH, STATION_OPEN, TABLE_CRAFT, FURNACE_LOAD, FURNACE_WAIT, STATION_PICKUP
+        STATION_PLACE, STATION_APPROACH, STATION_OPEN, TABLE_CRAFT, FURNACE_LOAD, FURNACE_WAIT, STATION_PICKUP,
+        // 任务单 15
+        EAT_SELECT, EAT_CHEW, BED_PICKUP
     }
 
     private enum OpState { RUNNING, DONE, FAILED }
@@ -152,6 +162,9 @@ public final class Executor implements AbstractGameEventListener {
         int smelted;
         int unlitSince = -1;
         int lastCheckTick;
+        // 任务单 15
+        boolean internal;     // 模组自己发起的（自动吃、收床），不回 ack / result
+        int foodBefore;
         // deliver
         Phase phase = Phase.APPROACH;
         String targetName;
@@ -182,6 +195,13 @@ public final class Executor implements AbstractGameEventListener {
 
     /** 自己放过的方块（任务单 14）：方块 id → 位置，pickup_block 只认这里的。 */
     private final Map<String, BlockPos> placedBlocks = new HashMap<>();
+
+    // 任务单 15：睡醒后要收的床、自动吃的节流
+    private BlockPos bedToCollect;
+    private String bedToCollectId;
+    private boolean wasSleeping;
+    private int autoEatNotBefore;
+    private int internalSeq;
 
     public void setRules(Rules rules) {
         this.rules = rules == null ? Rules.EMPTY : rules;
@@ -228,6 +248,9 @@ public final class Executor implements AbstractGameEventListener {
             return;
         }
         CompanionMod.LOG.info(CompanionMod.TAG + "command {} id={}", cmd.name().wire(), env.id());
+        if (mc.player != null && mc.player.isSleeping() && cmd.name() != CommandName.REPORT_STATUS) {
+            wakeUp(mc); // 躺着什么都做不了：先起床（任务单 15）
+        }
         switch (cmd.name()) {
             case STOP -> startStop(env.id());
             case CANCEL -> {
@@ -261,6 +284,8 @@ public final class Executor implements AbstractGameEventListener {
             case PLACE -> startPlace(env.id(), cmd.args(), mc);
             case PICKUP_BLOCK -> startPickupBlock(env.id(), cmd.args(), mc);
             case USE_FURNACE -> startUseFurnace(env.id(), cmd.args(), mc);
+            case EAT -> startEat(env.id(), cmd.args(), mc, false);
+            case SLEEP -> startSleep(env.id(), cmd.args(), mc);
             default -> {
                 // 任务单 9 加的新命令，模组还没实现：按 handbook 7.1 立刻拒绝，别让 hub 等 3 秒判无响应
                 CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
@@ -394,8 +419,11 @@ public final class Executor implements AbstractGameEventListener {
     }
 
     private void startStop(String id) {
+        releaseUseKey();
         if (current != null) {
-            send(MessageType.RESULT, Result.cancelled(current.id));
+            if (!current.internal) {
+                send(MessageType.RESULT, Result.cancelled(current.id));
+            }
             closeMenuIfOpen(current);
             current = null;
         }
@@ -412,8 +440,11 @@ public final class Executor implements AbstractGameEventListener {
         if (current == null) {
             return;
         }
-        send(MessageType.RESULT, Result.cancelled(current.id));
-        CompanionMod.LOG.info(CompanionMod.TAG + "task {} cancelled (replaced)", current.name.wire());
+        releaseUseKey();
+        if (!current.internal) {
+            send(MessageType.RESULT, Result.cancelled(current.id));
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "task {} cancelled (replaced, internal={})", current.name.wire(), current.internal);
         closeMenuIfOpen(current);
         current = null;
         BaritoneBridge.cancelEverything();
@@ -422,6 +453,7 @@ public final class Executor implements AbstractGameEventListener {
 
     /** 与后台断开：立刻停，丢掉任务，不补发 result（细则第 15 节）。 */
     public void onLinkLost() {
+        releaseUseKey();
         if (current != null) {
             CompanionMod.LOG.info(CompanionMod.TAG + "link lost, dropping task {}", current.name.wire());
             closeMenuIfOpen(current);
@@ -433,15 +465,32 @@ public final class Executor implements AbstractGameEventListener {
 
     /** 离开世界。 */
     public void reset() {
+        releaseUseKey();
         current = null;
+        bedToCollect = null;
+        wasSleeping = false;
         BreakGuard.closeAll("left world");
+    }
+
+    private static void releaseUseKey() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.options != null && mc.options.keyUse.isDown()) {
+            mc.options.keyUse.setDown(false);
+            if (mc.player != null && mc.player.isUsingItem() && mc.gameMode != null) {
+                mc.gameMode.releaseUsingItem(mc.player);
+            }
+        }
     }
 
     // ---------------- 每 tick ----------------
 
     public void onTick(Minecraft mc) {
         tick++;
-        if (current == null || mc.player == null || mc.level == null) {
+        if (mc.player == null || mc.level == null) {
+            return;
+        }
+        tickPassive(mc, mc.player);
+        if (current == null) {
             return;
         }
         LocalPlayer me = mc.player;
@@ -461,11 +510,268 @@ public final class Executor implements AbstractGameEventListener {
             case COLLECT -> tickCollect(mc, me);
             case CRAFT -> tickCraft(mc, me);
             case PLACE -> tickPlace(mc, me);
-            case PICKUP_BLOCK -> tickPickupBlock(mc, me);
             case USE_FURNACE -> tickUseFurnace(mc, me);
+            case EAT -> tickEat(mc, me);
+            case SLEEP -> tickSleep(mc, me);
+            case PICKUP_BLOCK -> {
+                if (current.internal) {
+                    tickBedPickup(mc, me);
+                } else {
+                    tickPickupBlock(mc, me);
+                }
+            }
             default -> {
             }
         }
+    }
+
+    // ---------------- 任务单 15：被动行为（没任务时自己做） ----------------
+
+    /** 每 tick 在 onTick 开头调：饿了自动吃；睡醒了把自己放的床收回。 */
+    private void tickPassive(Minecraft mc, LocalPlayer me) {
+        boolean sleeping = me.isSleeping();
+        if (wasSleeping && !sleeping) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "woke up");
+        }
+        wasSleeping = sleeping;
+        if (current != null || sleeping || me.isDeadOrDying()) {
+            return;
+        }
+        if (bedToCollect != null) {
+            Block bed = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(bedToCollectId));
+            if (bed == null || !(mc.level.getBlockState(bedToCollect).getBlock() instanceof BedBlock)) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "bed at {} is gone, nothing to collect", bedToCollect);
+                bedToCollect = null;
+                return;
+            }
+            Task t = new Task("internal-bed-" + (++internalSeq), CommandName.PICKUP_BLOCK, null, tick);
+            t.internal = true;
+            t.phase = Phase.BED_PICKUP;
+            beginBreakOp(t, mc, me, bedToCollectId, bed, bedToCollect);
+            current = t;
+            CompanionMod.LOG.info(CompanionMod.TAG + "collecting own bed at {}", bedToCollect);
+            return;
+        }
+        if (Survival.hungry(me.getFoodData().getFoodLevel()) && tick >= autoEatNotBefore && rules.received()) {
+            startEat("internal-eat-" + (++internalSeq), null, mc, true);
+            if (current == null) {
+                autoEatNotBefore = tick + AUTO_EAT_RETRY_TICKS; // 没食物：过一会儿再看
+            }
+        }
+    }
+
+    private void tickBedPickup(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        OpState st = tickBreakOp(t, mc, me);
+        if (st == OpState.RUNNING) {
+            return;
+        }
+        if (st == OpState.DONE) {
+            placedBlocks.remove(t.opBlockId);
+            send(MessageType.EVENT, Event.bedCollected(new Pos(t.opPos.getX(), t.opPos.getY(), t.opPos.getZ()), Observer.dim(mc)));
+            CompanionMod.LOG.info(CompanionMod.TAG + "own bed collected from {}", t.opPos);
+        } else {
+            CompanionMod.LOG.info(CompanionMod.TAG + "could not collect own bed ({}), leaving it", t.opReason);
+        }
+        bedToCollect = null;
+        current = null;
+        BreakGuard.closeAll("bed pickup end");
+    }
+
+    private static void wakeUp(Minecraft mc) {
+        if (mc.player != null && mc.getConnection() != null) {
+            mc.getConnection().send(new ServerboundPlayerCommandPacket(mc.player, ServerboundPlayerCommandPacket.Action.STOP_SLEEPING));
+            CompanionMod.LOG.info(CompanionMod.TAG + "wake up requested");
+        }
+    }
+
+    // ---------------- 任务单 15：eat / sleep ----------------
+
+    /** 背包里能吃的东西（游戏自己知道哪些能吃、饱食度多少）。 */
+    static List<Survival.Food> foods(LocalPlayer me) {
+        List<Survival.Food> out = new ArrayList<>();
+        var items = me.getInventory().items;
+        for (int i = 0; i < items.size(); i++) {
+            ItemStack st = items.get(i);
+            if (st.isEmpty() || !st.isEdible() || st.getItem().getFoodProperties() == null) {
+                continue;
+            }
+            out.add(new Survival.Food(i, idOf(st), st.getItem().getFoodProperties().getNutrition()));
+        }
+        return out;
+    }
+
+    private void startEat(String id, JsonObject args, Minecraft mc, boolean internal) {
+        if (!internal) {
+            cancelCurrent();
+            BaritoneBridge.cancelEverything();
+            send(MessageType.ACK, Ack.accepted(id));
+        }
+        LocalPlayer me = mc.player;
+        Command.EatArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.EatArgs.class);
+        String wanted = a == null ? null : normalizeItem(a.item());
+        Survival.Food pick = Survival.pick(foods(me), rules.avoidFood(), wanted).orElse(null);
+        if (pick == null) {
+            if (internal) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "hungry ({}) but nothing to eat", me.getFoodData().getFoodLevel());
+                return;
+            }
+            finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of(wanted == null ? "food" : wanted, 1))));
+            return;
+        }
+        Task t = new Task(id, CommandName.EAT, args, tick);
+        t.internal = internal;
+        t.item = pick.id();
+        t.foodBefore = me.getFoodData().getFoodLevel();
+        t.startCount = countItem(me, pick.id());
+        int src = pick.inventoryIndex();
+        if (src < 9) {
+            me.getInventory().selected = src;
+        } else {
+            mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId, ContainerSlots.slotFor(src, ContainerSlots.INVENTORY_MENU_START),
+                    PLACE_HOTBAR_SLOT, ClickType.SWAP, me);
+            me.getInventory().selected = PLACE_HOTBAR_SLOT;
+        }
+        t.phase = Phase.EAT_SELECT;
+        t.phaseStartTick = tick;
+        current = t;
+        CompanionMod.LOG.info(CompanionMod.TAG + "eat started item={} nutrition={} food={} internal={}", pick.id(), pick.nutrition(), t.foodBefore, internal);
+    }
+
+    private void tickEat(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        if (t.phase == Phase.EAT_SELECT) {
+            if (tick - t.phaseStartTick < PLACE_SETTLE_TICKS) {
+                return;
+            }
+            if (!t.item.equals(idOf(me.getMainHandItem()))) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "eat: hand holds {} not {} -> stuck", idOf(me.getMainHandItem()), t.item);
+                endEat(mc, me, Result.failed(t.id, Reason.STUCK));
+                return;
+            }
+            // 按住"使用"键：游戏自己会开始吃并一直吃到完（和自动吃的模组做法一样）
+            mc.options.keyUse.setDown(true);
+            mc.gameMode.useItem(me, InteractionHand.MAIN_HAND);
+            t.phase = Phase.EAT_CHEW;
+            t.phaseStartTick = tick;
+            return;
+        }
+        int food = me.getFoodData().getFoodLevel();
+        if (countItem(me, t.item) < t.startCount || food > t.foodBefore) {
+            endEat(mc, me, Result.ok(t.id, new Result.EatDetail(t.item, food)));
+            return;
+        }
+        if (tick - t.phaseStartTick >= EAT_TIMEOUT_TICKS) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "eat: nothing happened in {} ticks -> stuck", EAT_TIMEOUT_TICKS);
+            endEat(mc, me, Result.failed(t.id, Reason.STUCK));
+        }
+    }
+
+    private void endEat(Minecraft mc, LocalPlayer me, Result r) {
+        mc.options.keyUse.setDown(false);
+        if (me.isUsingItem()) {
+            mc.gameMode.releaseUsingItem(me);
+        }
+        Task t = current;
+        if (t.internal) {
+            current = null;
+            if (r.status() == dev.blockmate.protocol.ResultStatus.OK) {
+                Result.EatDetail d = r.detailAs(Result.EatDetail.class);
+                send(MessageType.EVENT, Event.autoEat(t.item, d == null ? me.getFoodData().getFoodLevel() : d.foodAfter()));
+                CompanionMod.LOG.info(CompanionMod.TAG + "auto ate {} -> food {}", t.item, me.getFoodData().getFoodLevel());
+            } else {
+                autoEatNotBefore = tick + AUTO_EAT_RETRY_TICKS;
+            }
+            return;
+        }
+        finish(r);
+    }
+
+    private void startSleep(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        BaritoneBridge.cancelEverything();
+        send(MessageType.ACK, Ack.accepted(id));
+        LocalPlayer me = mc.player;
+        if (!Survival.isNight(mc.level.getDayTime())) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "sleep: not night (day_time={}) -> not_night", mc.level.getDayTime() % 24000);
+            finish(Result.failed(id, Reason.NOT_NIGHT, new Result.SleepDetail(false)));
+            return;
+        }
+        Task t = new Task(id, CommandName.SLEEP, args, tick);
+        BlockPos bed = findFreeBed(mc, me.blockPosition(), STATION_RADIUS);
+        if (bed != null) {
+            t.stationPos = bed;
+            t.selfPlaced = false;
+            t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+            IBaritone b = BaritoneBridge.baritone();
+            if (me.position().distanceTo(Vec3.atCenterOf(bed)) > 3.0 && b != null) {
+                setGoal(b, t, bed, 2);
+                t.phase = Phase.STATION_APPROACH;
+            } else {
+                t.phase = Phase.STATION_OPEN;
+                t.openSince = -1;
+            }
+        } else {
+            String ownBed = null;
+            for (ItemStack st : me.getInventory().items) {
+                String idStr = idOf(st);
+                if (idStr != null && idStr.endsWith("_bed")) {
+                    ownBed = idStr;
+                    break;
+                }
+            }
+            if (ownBed == null) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "sleep: no bed within {} and none in inventory -> no_bed", STATION_RADIUS);
+                finish(Result.failed(id, Reason.NO_BED, new Result.SleepDetail(false)));
+                return;
+            }
+            int rc = beginPlaceOp(t, mc, me, ownBed);
+            if (rc != 0) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "sleep: cannot place own bed (rc={}) -> stuck", rc);
+                finish(Result.failed(id, Reason.STUCK, new Result.SleepDetail(false)));
+                return;
+            }
+            t.selfPlaced = true;
+            t.phase = Phase.STATION_PLACE;
+        }
+        current = t;
+        CompanionMod.LOG.info(CompanionMod.TAG + "sleep started bed={} self_placed={}", t.stationPos, t.selfPlaced);
+    }
+
+    private void tickSleep(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        if (tickStation(t, mc, me, p -> p.isSleeping())) {
+            BlockPos bed = me.getSleepingPos().orElse(t.stationPos);
+            if (t.selfPlaced) {
+                bedToCollect = bed;
+                bedToCollectId = t.opBlockId;
+            }
+            CompanionMod.LOG.info(CompanionMod.TAG + "sleep: lying in bed at {} (self_placed={})", bed, t.selfPlaced);
+            finish(Result.ok(t.id, new Result.SleepDetail(true, new Pos(bed.getX(), bed.getY(), bed.getZ()))));
+        }
+    }
+
+    /** 8 格内没人占的床（床头那格）；没有返回 null。 */
+    static BlockPos findFreeBed(Minecraft mc, BlockPos center, int radius) {
+        BlockPos best = null;
+        double bestD = Double.MAX_VALUE;
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        for (int x = center.getX() - radius; x <= center.getX() + radius; x++) {
+            for (int y = center.getY() - radius; y <= center.getY() + radius; y++) {
+                for (int z = center.getZ() - radius; z <= center.getZ() + radius; z++) {
+                    var st = mc.level.getBlockState(p.set(x, y, z));
+                    if (!(st.getBlock() instanceof BedBlock) || st.getValue(BedBlock.PART) != BedPart.HEAD || st.getValue(BedBlock.OCCUPIED)) {
+                        continue;
+                    }
+                    double d = center.distSqr(p);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = p.immutable();
+                    }
+                }
+            }
+        }
+        return best;
     }
 
     // ---------------- 任务单 14：craft / place / pickup_block / use_furnace ----------------
@@ -745,6 +1051,11 @@ public final class Executor implements AbstractGameEventListener {
 
     /** 推进 放 → 走过去 → 打开菜单；菜单打开（类型是 menuType）返回 true；失败自己收尾。 */
     private boolean tickStation(Task t, Minecraft mc, LocalPlayer me, Class<?> menuType) {
+        return tickStation(t, mc, me, p -> menuType.isInstance(p.containerMenu));
+    }
+
+    /** 同上，"打开了"由 opened 判定（睡觉用 isSleeping）。 */
+    private boolean tickStation(Task t, Minecraft mc, LocalPlayer me, java.util.function.Predicate<LocalPlayer> opened) {
         IBaritone b = BaritoneBridge.baritone();
         switch (t.phase) {
             case STATION_PLACE -> {
@@ -787,12 +1098,12 @@ public final class Executor implements AbstractGameEventListener {
                     t.openSince = tick;
                     return false;
                 }
-                if (menuType.isInstance(me.containerMenu)) {
-                    CompanionMod.LOG.info(CompanionMod.TAG + "station menu open {} id={}", menuType.getSimpleName(), me.containerMenu.containerId);
+                if (opened.test(me)) {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "station ready at {} ({})", t.stationPos, me.containerMenu.getClass().getSimpleName());
                     return true;
                 }
-                if (tick - t.openSince >= MENU_OPEN_TIMEOUT_TICKS) {
-                    CompanionMod.LOG.info(CompanionMod.TAG + "station: menu did not open at {} -> stuck", t.stationPos);
+                if (tick - t.openSince >= (t.name == CommandName.SLEEP ? SLEEP_CONFIRM_TICKS : MENU_OPEN_TIMEOUT_TICKS)) {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "station: nothing happened at {} after use -> stuck (sleep: 附近有怪或床被占)", t.stationPos);
                     finish(Result.failed(t.id, Reason.STUCK));
                 }
             }
@@ -1801,6 +2112,12 @@ public final class Executor implements AbstractGameEventListener {
     }
 
     private void finish(Result r) {
+        if (current != null && current.internal) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "internal task {} ended {} {}", current.id, r.status(), r.reason() == null ? "" : r.reason().wire());
+            current = null;
+            BreakGuard.closeAll("internal end");
+            return;
+        }
         CompanionMod.LOG.info(CompanionMod.TAG + "result {} {} {}", r.commandId(), r.status(), r.reason() == null ? "" : r.reason().wire());
         send(MessageType.RESULT, r);
         if (current != null) {

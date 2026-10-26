@@ -201,6 +201,8 @@ public final class Simulator {
                 yield new Result.UseFurnaceDetail(a == null || a.count() == null ? 1 : a.count());
             }
             case PLACE, PICKUP_BLOCK -> new Result.PlaceDetail(pos());
+            case EAT -> new Result.EatDetail("minecraft:bread", 20);
+            case SLEEP -> new Result.SleepDetail(true, pos());
             default -> null;
         };
         send(MessageType.RESULT, detail == null ? Result.ok(t.commandId()) : Result.ok(t.commandId(), detail));

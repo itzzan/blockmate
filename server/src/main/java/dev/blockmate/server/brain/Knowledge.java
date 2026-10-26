@@ -29,6 +29,8 @@ public final class Knowledge {
     private BlockRules rules = BlockRules.empty();
     private FileTime rulesMtime;
     private boolean rulesWarned;
+    private List<String> avoidFood = List.of();
+    private FileTime foodMtime;
 
     public Knowledge(Path dir) {
         this.dir = dir;
@@ -65,14 +67,17 @@ public final class Knowledge {
     }
 
     /**
-     * blocks.yaml 的 mineable / placeable 两段（任务单 12）。文件缺失或坏了返回空清单 = 什么都不许挖、不许放。
+     * blocks.yaml 的 mineable / placeable / drops（任务单 12、13）加 food.yaml 的 avoid（任务单 15）。
+     * blocks.yaml 缺失或坏了返回空清单 = 什么都不许挖、不许放；food.yaml 缺失只是没有"不该吃"的清单。
      * id 没写命名空间自动补 minecraft:，统一小写。
      */
     public synchronized BlockRules blockRules() {
         if (dir == null) {
             return rules;
         }
+        BlockRules base = BlockRules.empty();
         Path p = dir.resolve("blocks.yaml");
+        boolean haveBlocks = false;
         try {
             if (Files.exists(p)) {
                 FileTime mtime = Files.getLastModifiedTime(p);
@@ -82,17 +87,37 @@ public final class Knowledge {
                     log.info("knowledge loaded file=blocks.yaml mineable={} placeable={} drops={}", rules.mineable().size(),
                             rules.placeable().size(), rules.dropsOrEmpty().size());
                 }
-                return rules;
+                base = rules;
+                haveBlocks = true;
             }
         } catch (IOException | RuntimeException e) {
             log.warn("knowledge blocks.yaml read failed: {}（按空清单处理，什么都不许挖）", e.getMessage());
-            return BlockRules.empty();
         }
-        if (!rulesWarned) {
+        if (!haveBlocks && !rulesWarned) {
             log.warn("knowledge file missing: {}（没有白名单，伙伴什么都不许挖、不许放）", p);
             rulesWarned = true;
         }
-        return BlockRules.empty();
+        return new BlockRules(base.mineable(), base.placeable(), base.dropsOrEmpty(), avoidFood());
+    }
+
+    /** food.yaml 的 avoid 段：不该吃的食物。缺失 = 空。 */
+    private List<String> avoidFood() {
+        Path p = dir.resolve("food.yaml");
+        try {
+            if (Files.exists(p)) {
+                FileTime mtime = Files.getLastModifiedTime(p);
+                if (foodMtime == null || !mtime.equals(foodMtime)) {
+                    Object loaded = new Yaml().load(Files.readString(p, StandardCharsets.UTF_8));
+                    avoidFood = loaded instanceof Map<?, ?> m ? idList(m.get("avoid")) : List.of();
+                    foodMtime = mtime;
+                    log.info("knowledge loaded file=food.yaml avoid={}", avoidFood.size());
+                }
+                return avoidFood;
+            }
+        } catch (IOException | RuntimeException e) {
+            log.warn("knowledge food.yaml read failed: {}", e.getMessage());
+        }
+        return List.of();
     }
 
     static BlockRules parseRules(String yamlText) {

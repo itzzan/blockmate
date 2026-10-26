@@ -80,7 +80,11 @@ public record Result(String commandId, ResultStatus status, Reason reason, JsonO
     }
 
     /** sleep：是否真的睡着并跳过了夜晚。 */
-    public record SleepDetail(boolean slept) {
+    /** sleep：躺下了没有；bedPos 是床的位置（任务单 15，hub 用它记地点 bed / home）。 */
+    public record SleepDetail(boolean slept, Pos bedPos) {
+        public SleepDetail(boolean slept) {
+            this(slept, null);
+        }
     }
 
     /** use_furnace：烧出来的数量。 */

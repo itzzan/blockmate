@@ -1,0 +1,12 @@
+# 吃东西的常识（知识层，guide-2 任务单 15）
+#
+# 什么能吃、饱食度多少，模组直接问游戏（物品自带），这里不列。
+# 只写"不该吃的"：吃了中毒、致幻或几乎没营养的，只有背包里别的都没有时才碰。
+# 后台在伙伴连上来（hello）时随白名单一起下发给模组；改了要让伙伴下线再上线。
+avoid:
+  - minecraft:rotten_flesh      # 腐肉：会饥饿
+  - minecraft:spider_eye        # 蜘蛛眼：中毒
+  - minecraft:poisonous_potato  # 毒马铃薯
+  - minecraft:pufferfish        # 河豚：中毒 + 反胃
+  - minecraft:chorus_fruit      # 紫颂果：随机传送
+  - minecraft:chicken           # 生鸡肉：可能饥饿

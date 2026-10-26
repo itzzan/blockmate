@@ -227,11 +227,38 @@ public final class Hub {
             case RESPAWN -> {
                 memory.saveEvent("respawn", null, null, ProtocolCodec.toBody(ev));
                 notice("伙伴重生了", "info");
+                afterRespawn();
+            }
+            case AUTO_EAT -> {
+                memory.saveEvent("auto_eat", null, null, ProtocolCodec.toBody(ev));
+                log.info("event auto_eat item={} food_after={}", ev.item(), ev.count());
+            }
+            case BED_COLLECTED -> {
+                memory.saveEvent("bed_collected", null, null, ProtocolCodec.toBody(ev));
+                log.info("event bed_collected");
             }
             default -> memory.saveEvent(ev.kind().name().toLowerCase(), null, null, ProtocolCodec.toBody(ev));
         }
         log.info("event kind={}", ev.kind().name().toLowerCase());
         pushStatus(true);
+    }
+
+    /** 任务单 15：重生后——主人在就过去找主人，不在但记过家就回家，都没有就待着。等 2 秒让模组进完世界。 */
+    private void afterRespawn() {
+        boolean ownerHere = (ownerOnline != null && ownerOnline) || (lastSnapshot != null && lastSnapshot.owner() != null);
+        boolean homeKnown = memory.place("home").isPresent();
+        CommandName action = ownerHere ? CommandName.COME_HERE : homeKnown ? CommandName.GO_HOME : null;
+        log.info("respawn_decision owner_here={} home_known={} action={}", ownerHere, homeKnown, action == null ? "none" : action.wire());
+        if (action == null) {
+            return;
+        }
+        exec.schedule(() -> submit(() -> {
+            if (!companionInWorld() || (plan != null && plan.running())) {
+                return;
+            }
+            startPlan(action == CommandName.COME_HERE ? "重生后去找主人" : "重生后回家",
+                    List.of(new PlanRun.Step(0, action, new JsonObject())), null);
+        }), 2, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     private void onAck(Ack a) {
@@ -264,6 +291,7 @@ public final class Hub {
         TaskSlot.ResultOutcome outcome = slot.onResult(r.commandId());
         memory.saveEvent("result", r.commandId(), commandSource.get(r.commandId()), ProtocolCodec.toBody(r));
         log.info("result cmd_id={} status={} reason={} outcome={}", r.commandId(), r.status(), r.reason(), outcome);
+        rememberBedIfSlept(r);
         String stopSource = stopCommands.remove(r.commandId());
         if (stopSource != null) {
             if ("button".equals(stopSource)) {
@@ -379,6 +407,25 @@ public final class Hub {
             case "床", "bed" -> "bed";
             default -> n;
         };
+    }
+
+    /** 任务单 15：睡成功就把床的位置记成 bed；没记过家的话顺手记成 home（任务单 13 留的）。 */
+    private void rememberBedIfSlept(Result r) {
+        if (r.status() != dev.blockmate.protocol.ResultStatus.OK || commandNames.get(r.commandId()) != CommandName.SLEEP) {
+            return;
+        }
+        Result.SleepDetail d = r.detailAs(Result.SleepDetail.class);
+        if (d == null || !d.slept() || d.bedPos() == null) {
+            return;
+        }
+        String dim = lastSnapshot != null && lastSnapshot.dim() != null ? lastSnapshot.dim() : "minecraft:overworld";
+        memory.savePlace("bed", dim, d.bedPos().x(), d.bedPos().y(), d.bedPos().z());
+        boolean homeSet = false;
+        if (memory.place("home").isEmpty()) {
+            memory.savePlace("home", dim, d.bedPos().x(), d.bedPos().y(), d.bedPos().z());
+            homeSet = true;
+        }
+        log.info("place_remembered name=bed dim={} home_set={}", dim, homeSet);
     }
 
     /** remember_place 由 hub 自己完成（任务单 13）：拿最新快照的位置存进 places 表，不下发模组。 */

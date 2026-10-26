@@ -229,6 +229,15 @@ public final class Brain {
                             return "成功，烧好了 " + d.smelted() + " 个，在你自己的背包里";
                         }
                     }
+                    case EAT -> {
+                        Result.EatDetail d = r.detailAs(Result.EatDetail.class);
+                        if (d != null) {
+                            return "成功，吃了 " + d.item() + "，饥饿值现在 " + d.foodAfter() + "/20";
+                        }
+                    }
+                    case SLEEP -> {
+                        return "成功，躺到床上了，天亮会自己起来";
+                    }
                     default -> {
                     }
                 }

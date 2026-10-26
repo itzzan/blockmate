@@ -153,5 +153,7 @@ class BodyRecordsTest {
         assertEquals("minecraft:cobblestone", withDrops.dropOf("minecraft:stone"), "石头掉圆石");
         assertEquals("minecraft:oak_log", withDrops.dropOf("minecraft:oak_log"), "没写的和方块同名");
         assertEquals("minecraft:dirt", new BlockRules(java.util.List.of(), java.util.List.of(), null).dropOf("minecraft:dirt"), "老后台没发 drops 也不炸");
+        assertTrue(new BlockRules(java.util.List.of(), java.util.List.of(), null, null).avoidFoodOrEmpty().isEmpty(), "老后台没发 avoid_food 也不炸");
+        assertEquals(1, new BlockRules(java.util.List.of(), java.util.List.of(), java.util.Map.of(), java.util.List.of("minecraft:rotten_flesh")).avoidFood().size());
     }
 }

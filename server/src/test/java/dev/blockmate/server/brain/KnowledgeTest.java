@@ -38,6 +38,9 @@ class KnowledgeTest {
         assertEquals(java.util.List.of("minecraft:crafting_table"), r.placeable());
         assertEquals("minecraft:cobblestone", r.dropOf("minecraft:stone"), "drops 两边都补命名空间");
         assertEquals("minecraft:oak_log", r.dropOf("minecraft:oak_log"));
+        assertTrue(r.avoidFoodOrEmpty().isEmpty(), "没有 food.yaml 就没有不该吃的清单");
+        Files.writeString(dir.resolve("food.yaml"), "avoid:\n  - rotten_flesh\n  - minecraft:spider_eye\n");
+        assertEquals(java.util.List.of("minecraft:rotten_flesh", "minecraft:spider_eye"), k.blockRules().avoidFood());
         assertEquals("", k.planExamples(), "plan_examples.md 不存在就是空串");
     }
 
@@ -69,5 +72,7 @@ class KnowledgeTest {
         assertEquals("minecraft:cobblestone", r.dropOf("minecraft:stone"));
         assertEquals("minecraft:raw_iron", r.dropOf("minecraft:deepslate_iron_ore"));
         assertEquals(8, r.dropsOrEmpty().size());
+        assertTrue(r.avoidFood().contains("minecraft:rotten_flesh"), "仓库 food.yaml 里腐肉是不该吃的");
+        assertEquals(6, r.avoidFood().size());
     }
 }

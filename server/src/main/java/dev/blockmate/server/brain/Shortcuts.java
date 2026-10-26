@@ -41,7 +41,15 @@ public final class Shortcuts {
             Map.entry("记住这里是家", CommandName.REMEMBER_PLACE),
             Map.entry("记住这是家", CommandName.REMEMBER_PLACE),
             Map.entry("这里是家", CommandName.REMEMBER_PLACE),
-            Map.entry("这里就是家", CommandName.REMEMBER_PLACE));
+            Map.entry("这里就是家", CommandName.REMEMBER_PLACE),
+            // 任务单 15
+            Map.entry("去睡觉", CommandName.SLEEP),
+            Map.entry("睡觉", CommandName.SLEEP),
+            Map.entry("睡吧", CommandName.SLEEP),
+            Map.entry("去睡吧", CommandName.SLEEP),
+            Map.entry("吃点东西", CommandName.EAT),
+            Map.entry("吃东西", CommandName.EAT),
+            Map.entry("吃点什么", CommandName.EAT));
 
     private Shortcuts() {
     }
