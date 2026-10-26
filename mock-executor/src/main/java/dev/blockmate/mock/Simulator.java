@@ -88,6 +88,10 @@ public final class Simulator {
                 HelloOk ok = ProtocolCodec.bodyAs(envelope, HelloOk.class);
                 if (!ok.ok()) {
                     console.accept("后台拒绝了连接: " + ok.error());
+                } else if (ok.rules() != null) {
+                    console.accept("收到白名单 可挖=" + ok.rules().mineable().size() + " 可放=" + ok.rules().placeable().size());
+                } else {
+                    console.accept("hello 没带白名单");
                 }
             }
             case COMMAND -> handleCommand(envelope, now);

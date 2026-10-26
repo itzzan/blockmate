@@ -144,5 +144,9 @@ class BodyRecordsTest {
         assertEquals("keeper", Hello.keeper("t", "0.1.0").role());
         assertTrue(HelloOk.ok(1).ok());
         assertFalse(HelloOk.rejected("token 不对").ok());
+        HelloOk mc = HelloOk.mc(1, new BlockRules(java.util.List.of("minecraft:oak_log"), java.util.List.of("minecraft:torch")));
+        assertEquals(1, mc.rules().mineable().size(), "回模组的 hello 带白名单");
+        assertTrue(ProtocolCodec.gson().toJson(mc).contains("\"rules\":{\"mineable\""));
+        assertTrue(BlockRules.empty().placeable().isEmpty(), "空清单 = 什么都不许");
     }
 }

@@ -3,6 +3,7 @@ package dev.blockmate.server.hub;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import dev.blockmate.protocol.Ack;
+import dev.blockmate.protocol.BlockRules;
 import dev.blockmate.protocol.Chat;
 import dev.blockmate.protocol.Command;
 import dev.blockmate.protocol.CommandName;
@@ -29,6 +30,7 @@ import dev.blockmate.server.Config;
 import dev.blockmate.server.brain.Brain;
 import dev.blockmate.server.brain.BrainContext;
 import dev.blockmate.server.brain.ItemNames;
+import dev.blockmate.server.brain.Knowledge;
 import dev.blockmate.server.brain.Shortcuts;
 import dev.blockmate.server.brain.SnapshotSummary;
 import dev.blockmate.server.brain.Tools;
@@ -110,11 +112,19 @@ public final class Hub {
     /** command id → 触发它的那条 owner 消息 id（回复时作为 in_reply_to）。 */
     private final Map<String, String> commandSource = new HashMap<>();
 
+    private final Knowledge knowledge;
+
     public Hub(Config cfg, Memory memory, Brain brain, ItemNames names, ScheduledExecutorService exec,
+               ExecutorService brainExec) {
+        this(cfg, memory, brain, Knowledge.empty(), names, exec, brainExec);
+    }
+
+    public Hub(Config cfg, Memory memory, Brain brain, Knowledge knowledge, ItemNames names, ScheduledExecutorService exec,
                ExecutorService brainExec) {
         this.cfg = cfg;
         this.memory = memory;
         this.brain = brain;
+        this.knowledge = knowledge == null ? Knowledge.empty() : knowledge;
         this.names = names;
         this.exec = exec;
         this.brainExec = brainExec;
@@ -145,8 +155,10 @@ public final class Hub {
         mc = s;
         mcOnline = true;
         lastSnapshot = null;
-        s.send(envelope(MessageType.HELLO, Peer.MC, HelloOk.ok(now())));
-        log.info("executor online player={} mod={}", hello.player(), hello.modVersion());
+        BlockRules rules = knowledge.blockRules();
+        s.send(envelope(MessageType.HELLO, Peer.MC, HelloOk.mc(now(), rules)));
+        log.info("executor online player={} mod={} rules mineable={} placeable={}", hello.player(), hello.modVersion(),
+                rules.mineable().size(), rules.placeable().size());
         memory.saveEvent("executor_online", null, null, obj("player", hello.player()));
         pushStatus(true);
     }
@@ -412,7 +424,7 @@ public final class Hub {
             case Brain.PlanDecision.REPLAN -> {
                 List<String> errors = new ArrayList<>();
                 List<PlanRun.Step> fresh = decision.newSteps() == null ? List.of()
-                        : PlanValidator.validateSteps(decision.newSteps(), step.index() + 1, errors);
+                        : PlanValidator.validateSteps(decision.newSteps(), step.index() + 1, errors, knowledge.blockRules());
                 if (fresh.isEmpty() || !errors.isEmpty()) {
                     log.info("plan_replan_rejected plan_id={} errors={}", planId, errors);
                     sayDecision((say.isBlank() ? "" : say + " ") + "不过新步骤我没列对，这件事先放下。");
@@ -513,7 +525,7 @@ public final class Hub {
     public void uiConnected(Sender s) {
         uis.add(s);
         s.send(envelope(MessageType.HELLO, Peer.UI,
-                new HelloOk(true, now(), ProtocolCodec.VERSION, null, status(), historyJson(), null)));
+                new HelloOk(true, now(), ProtocolCodec.VERSION, null, status(), historyJson(), null, null)));
         log.info("ui connected count={}", uis.size());
         pushPreferences(s);
         if (plan != null && plan.running()) {
@@ -593,7 +605,7 @@ public final class Hub {
                     log.info("action_while_offline name=make_plan");
                     continue;
                 }
-                PlanValidator.Validated v = PlanValidator.validate(tc.arguments());
+                PlanValidator.Validated v = PlanValidator.validate(tc.arguments(), knowledge.blockRules());
                 if (v.ok()) {
                     log.info("plan_accepted steps={} attempt={}", v.steps().size(), planAttempt);
                     startPlan(v.goal().isBlank() ? src.text() : v.goal(), v.steps(), src.id());
@@ -764,7 +776,7 @@ public final class Hub {
         }
         keeper = s;
         s.send(envelope(MessageType.HELLO, Peer.KEEPER,
-                new HelloOk(true, now(), ProtocolCodec.VERSION, keeperDesired, null, null, null)));
+                new HelloOk(true, now(), ProtocolCodec.VERSION, keeperDesired, null, null, null, null)));
         log.info("keeper online desired={}", keeperDesired);
         pushStatus(true);
     }

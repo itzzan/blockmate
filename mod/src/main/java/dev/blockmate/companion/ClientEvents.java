@@ -122,7 +122,15 @@ public final class ClientEvents {
             case HELLO -> {
                 HelloOk ok = ProtocolCodec.bodyAs(env, HelloOk.class);
                 if (ok.ok()) {
-                    CompanionMod.LOG.info(CompanionMod.TAG + "hub hello ok");
+                    if (ok.rules() != null) {
+                        Rules rules = Rules.of(ok.rules().mineable(), ok.rules().placeable());
+                        executor.setRules(rules);
+                        CompanionMod.LOG.info(CompanionMod.TAG + "hub hello ok; 收到白名单 可挖={} 可放={}", rules.mineableCount(),
+                                rules.placeableCount());
+                    } else {
+                        executor.setRules(Rules.EMPTY);
+                        CompanionMod.LOG.warn(CompanionMod.TAG + "hub hello ok 但没带白名单，什么都不许挖、不许放（后台版本太旧？）");
+                    }
                     observer.announceJoined();
                 } else {
                     CompanionMod.LOG.error(CompanionMod.TAG + "hub rejected us: {}", ok.error());

@@ -31,6 +31,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -227,6 +228,17 @@ class HubIntegrationTest {
     }
 
     private void startApp() throws Exception {
+        // 任务单 12：测试目录里放一份白名单，模组连上时 hello 会带
+        Files.createDirectories(dir.resolve("knowledge"));
+        Files.writeString(dir.resolve("knowledge").resolve("blocks.yaml"), """
+                mineable:
+                  - minecraft:oak_log
+                  - minecraft:stone
+                  - minecraft:cobblestone
+                placeable:
+                  - minecraft:crafting_table
+                  - minecraft:torch
+                """);
         app = ServerApp.start(config(), 0, model);
     }
 
@@ -562,6 +574,34 @@ class HubIntegrationTest {
         assertEquals(CommandName.PICK_UP, p.steps().get(2).command());
         assertEquals("minecraft:oak_log", p.steps().get(2).args().get("item").getAsString(), "重排的步骤也过校验（补命名空间）");
         waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 2000, "done");
+    }
+
+    @Test
+    void 模组连上时hello带白名单() throws Exception {
+        startApp();
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        waitFor(() -> mockConsole.contains("收到白名单 可挖=3 可放=2"), 3000, "mock 收到白名单：" + mockConsole);
+    }
+
+    @Test
+    void 计划里挖不在清单的方块被打回() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        model.makePlanArgs = planArgs("""
+                [{"command":"mine","args":{"block":"minecraft:chest","count":1}}]""");
+        model.makePlanArgsRetry = planArgs("""
+                [{"command":"mine","args":{"block":"oak_log","count":20}},
+                 {"command":"deliver","args":{"item":"oak_log","count":20}}]""");
+        int before = model.requests.size();
+        ui.send(MessageType.CHAT, new Chat("去弄 20 根木头回来"));
+        ui.reply(8000);
+        assertTrue(model.requests.stream().skip(before).anyMatch(req -> req.messages().get(req.messages().size() - 1).content()
+                .contains("minecraft:chest 不在允许挖的清单里")), "重问时说清是白名单问题");
+        waitFor(() -> mockConsole.contains("收到 mine"), 5000, "第二次合法的计划开始执行");
     }
 
     private static JsonObject planArgs(String stepsJson) {

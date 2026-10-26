@@ -99,6 +99,17 @@ public final class Executor implements AbstractGameEventListener {
     private int tick;
     private IBaritone listeningOn;
 
+    /** hello 下发的白名单（任务单 12）；没收到之前全不许。 */
+    private volatile Rules rules = Rules.EMPTY;
+
+    public void setRules(Rules rules) {
+        this.rules = rules == null ? Rules.EMPTY : rules;
+    }
+
+    public Rules rules() {
+        return rules;
+    }
+
     public Executor(Supplier<HubLink> link, Runnable reportStatus, Rejoiner rejoiner) {
         this.link = link;
         this.reportStatus = reportStatus;
@@ -300,6 +311,7 @@ public final class Executor implements AbstractGameEventListener {
             current = null;
         }
         boolean r = BaritoneBridge.cancelEverything();
+        BreakGuard.closeAll("stop");
         Task t = new Task(id, CommandName.STOP, null, tick);
         t.stop = new StopTracker(STOP_TICKS_PER_ATTEMPT, STOP_MAX_ATTEMPTS, tick);
         current = t;
@@ -315,6 +327,7 @@ public final class Executor implements AbstractGameEventListener {
         CompanionMod.LOG.info(CompanionMod.TAG + "task {} cancelled (replaced)", current.name.wire());
         current = null;
         BaritoneBridge.cancelEverything();
+        BreakGuard.closeAll("task replaced");
     }
 
     /** 与后台断开：立刻停，丢掉任务，不补发 result（细则第 15 节）。 */
@@ -324,11 +337,13 @@ public final class Executor implements AbstractGameEventListener {
             current = null;
         }
         BaritoneBridge.cancelEverything();
+        BreakGuard.closeAll("link lost");
     }
 
     /** 离开世界。 */
     public void reset() {
         current = null;
+        BreakGuard.closeAll("left world");
     }
 
     // ---------------- 每 tick ----------------
@@ -664,6 +679,7 @@ public final class Executor implements AbstractGameEventListener {
         CompanionMod.LOG.info(CompanionMod.TAG + "result {} {} {}", r.commandId(), r.status(), r.reason() == null ? "" : r.reason().wire());
         send(MessageType.RESULT, r);
         current = null;
+        BreakGuard.closeAll("result " + r.status());
     }
 
     private static double round(double v) {

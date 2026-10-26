@@ -30,9 +30,13 @@ public final class BaritoneBridge {
             s.allowParkour.value = false;
             s.allowInventory.value = false;
             s.followRadius.value = 3;
-            CompanionMod.LOG.info(CompanionMod.TAG + "baritone provider ok; allowBreak={} allowPlace={} allowParkour={} allowInventory={} followRadius={} baritone={}",
+            // 任务单 12：寻路宁可绕路也不顺手挖墙、放方块；allowBreakAnyway 由 BreakGuard 在挖目标时临时填
+            s.allowBreakAnyway.value = new java.util.ArrayList<>();
+            s.blockBreakAdditionalPenalty.value = 100.0;
+            s.blockPlacementPenalty.value = 100.0;
+            CompanionMod.LOG.info(CompanionMod.TAG + "baritone provider ok; allowBreak={} allowPlace={} allowParkour={} allowInventory={} followRadius={} breakPenalty={} placePenalty={} baritone={}",
                     s.allowBreak.value, s.allowPlace.value, s.allowParkour.value, s.allowInventory.value,
-                    s.followRadius.value, baritone != null);
+                    s.followRadius.value, s.blockBreakAdditionalPenalty.value, s.blockPlacementPenalty.value, baritone != null);
             return true;
         } catch (Throwable t) {
             CompanionMod.LOG.error(CompanionMod.TAG + "baritone not available: {}", t.toString());

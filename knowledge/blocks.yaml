@@ -1,0 +1,64 @@
+# 伙伴能挖什么、绝不碰什么、能放什么（知识层，guide-2 任务单 12）
+#
+# 规则只有两条，写在这里以外的地方一律不许挖、不许放：
+#   1. 方块不在 mineable 里 → 不挖。never_touch 只是给人看的说明，提醒哪些东西"看起来像建筑"，程序不用它。
+#   2. 物品不在 placeable 里 → 不放。放了工作台用完要收回。
+#
+# 后台在伙伴连上来（hello）时把 mineable 和 placeable 发给模组，模组不自己读文件。
+# 改了这个文件后台会自动重新读，但伙伴要下线再上线才拿到新清单。
+# 写法：一行一个物品 id；没写 minecraft: 前缀后台会补上。
+
+mineable:
+  # 原木（8 种）
+  - minecraft:oak_log
+  - minecraft:spruce_log
+  - minecraft:birch_log
+  - minecraft:jungle_log
+  - minecraft:acacia_log
+  - minecraft:dark_oak_log
+  - minecraft:mangrove_log
+  - minecraft:cherry_log
+  # 石头类
+  - minecraft:stone
+  - minecraft:cobblestone
+  - minecraft:deepslate
+  - minecraft:cobbled_deepslate
+  # 泥沙类
+  - minecraft:dirt
+  - minecraft:sand
+  - minecraft:gravel
+  # 矿（及深板岩变种）
+  - minecraft:coal_ore
+  - minecraft:deepslate_coal_ore
+  - minecraft:iron_ore
+  - minecraft:deepslate_iron_ore
+  - minecraft:copper_ore
+  - minecraft:deepslate_copper_ore
+
+never_touch:
+  # 只是说明：这些一看就是别人的东西或房子的一部分，哪怕主人叫它碰也不碰
+  - 箱子、木桶、潜影盒、熔炉、高炉、烟熏炉、附魔台、酿造台
+  - 所有门、活板门、栅栏门、栅栏、墙
+  - 所有床、告示牌、玻璃、楼梯、台阶、地毯、画、物品展示框
+  - 任何人工摆放的方块：石砖、木板、砂岩雕刻等等
+
+placeable:
+  - minecraft:crafting_table
+  - minecraft:torch
+  # 床（16 色，伙伴只放自己的床）
+  - minecraft:white_bed
+  - minecraft:orange_bed
+  - minecraft:magenta_bed
+  - minecraft:light_blue_bed
+  - minecraft:yellow_bed
+  - minecraft:lime_bed
+  - minecraft:pink_bed
+  - minecraft:gray_bed
+  - minecraft:light_gray_bed
+  - minecraft:cyan_bed
+  - minecraft:purple_bed
+  - minecraft:blue_bed
+  - minecraft:brown_bed
+  - minecraft:green_bed
+  - minecraft:red_bed
+  - minecraft:black_bed

@@ -61,12 +61,12 @@ public final class ServerApp {
         Memory memory = new Memory(cfg.dataDir.resolve("companion.db"));
         Persona persona = new Persona(cfg.personaPath, cfg.companionName, cfg.ownerName);
         ItemNames names = ItemNames.load();
-        Brain brain = new Brain(client, cfg.ollama.model(), persona, new Knowledge(cfg.knowledgeDir), names, cfg.ownerName,
-                cfg.companionName);
+        Knowledge knowledge = new Knowledge(cfg.knowledgeDir);
+        Brain brain = new Brain(client, cfg.ollama.model(), persona, knowledge, names, cfg.ownerName, cfg.companionName);
 
         ScheduledExecutorService hubExec = Executors.newSingleThreadScheduledExecutor(r -> named(r, "hub"));
         ScheduledExecutorService brainExec = Executors.newSingleThreadScheduledExecutor(r -> named(r, "brain"));
-        Hub hub = new Hub(cfg, memory, brain, names, hubExec, brainExec);
+        Hub hub = new Hub(cfg, memory, brain, knowledge, names, hubExec, brainExec);
 
         Javalin javalin = Javalin.create(c -> {
             c.showJavalinBanner = false;
