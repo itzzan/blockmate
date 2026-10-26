@@ -79,8 +79,8 @@ public final class Knowledge {
                 if (rulesMtime == null || !mtime.equals(rulesMtime)) {
                     rules = parseRules(Files.readString(p, StandardCharsets.UTF_8));
                     rulesMtime = mtime;
-                    log.info("knowledge loaded file=blocks.yaml mineable={} placeable={}", rules.mineable().size(),
-                            rules.placeable().size());
+                    log.info("knowledge loaded file=blocks.yaml mineable={} placeable={} drops={}", rules.mineable().size(),
+                            rules.placeable().size(), rules.dropsOrEmpty().size());
                 }
                 return rules;
             }
@@ -100,7 +100,24 @@ public final class Knowledge {
         if (!(loaded instanceof Map<?, ?> m)) {
             return BlockRules.empty();
         }
-        return new BlockRules(idList(m.get("mineable")), idList(m.get("placeable")));
+        return new BlockRules(idList(m.get("mineable")), idList(m.get("placeable")), dropMap(m.get("drops")));
+    }
+
+    private static Map<String, String> dropMap(Object o) {
+        if (!(o instanceof Map<?, ?> m)) {
+            return Map.of();
+        }
+        java.util.LinkedHashMap<String, String> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : m.entrySet()) {
+            if (e.getKey() != null && e.getValue() != null) {
+                String k = normalizeId(e.getKey().toString());
+                String v = normalizeId(e.getValue().toString());
+                if (!k.isEmpty() && !v.isEmpty()) {
+                    out.put(k, v);
+                }
+            }
+        }
+        return Map.copyOf(out);
     }
 
     private static List<String> idList(Object o) {

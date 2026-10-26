@@ -31,4 +31,14 @@ class ShortcutsTest {
         assertTrue(Shortcuts.match("").isEmpty());
         assertTrue(Shortcuts.match(null).isEmpty());
     }
+
+    @Test
+    void 回家和记住这里是家() {
+        assertEquals(CommandName.GO_HOME, Shortcuts.match("回家！").orElseThrow());
+        assertEquals(CommandName.GO_HOME, Shortcuts.match("回家吧").orElseThrow());
+        assertEquals(CommandName.REMEMBER_PLACE, Shortcuts.match("记住这里是家。").orElseThrow());
+        assertEquals("home", Shortcuts.argsFor(CommandName.REMEMBER_PLACE).get("name").getAsString());
+        assertEquals(0, Shortcuts.argsFor(CommandName.GO_HOME).size());
+        assertTrue(Shortcuts.match("回家路上顺便砍树").isEmpty(), "带别的内容的交给模型");
+    }
 }

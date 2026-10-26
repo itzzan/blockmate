@@ -33,7 +33,15 @@ public final class Shortcuts {
             Map.entry("过来", CommandName.COME_HERE),
             Map.entry("来我这", CommandName.COME_HERE),
             Map.entry("来我这里", CommandName.COME_HERE),
-            Map.entry("到我这来", CommandName.COME_HERE));
+            Map.entry("到我这来", CommandName.COME_HERE),
+            // 任务单 13
+            Map.entry("回家", CommandName.GO_HOME),
+            Map.entry("回家吧", CommandName.GO_HOME),
+            Map.entry("回家去", CommandName.GO_HOME),
+            Map.entry("记住这里是家", CommandName.REMEMBER_PLACE),
+            Map.entry("记住这是家", CommandName.REMEMBER_PLACE),
+            Map.entry("这里是家", CommandName.REMEMBER_PLACE),
+            Map.entry("这里就是家", CommandName.REMEMBER_PLACE));
 
     private Shortcuts() {
     }
@@ -50,5 +58,14 @@ public final class Shortcuts {
 
     public static Optional<CommandName> match(String text) {
         return Optional.ofNullable(TABLE.get(normalize(text)));
+    }
+
+    /** 固定短语对应的参数：目前只有"记住这里是家"要带 name=home。 */
+    public static com.google.gson.JsonObject argsFor(CommandName name) {
+        com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+        if (name == CommandName.REMEMBER_PLACE) {
+            o.addProperty("name", "home");
+        }
+        return o;
     }
 }

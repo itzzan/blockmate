@@ -15,8 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** 模型给的计划要被校验（任务单 11）。 */
 class PlanValidatorTest {
 
-    private static final BlockRules RULES = new BlockRules(List.of("minecraft:oak_log", "minecraft:cobblestone"),
-            List.of("minecraft:crafting_table", "minecraft:torch", "minecraft:red_bed"));
+    private static final BlockRules RULES = new BlockRules(List.of("minecraft:oak_log", "minecraft:stone"),
+            List.of("minecraft:crafting_table", "minecraft:torch", "minecraft:red_bed"),
+            java.util.Map.of("minecraft:stone", "minecraft:cobblestone"));
 
     private static JsonObject j(String s) {
         return JsonParser.parseString(s).getAsJsonObject();
@@ -76,5 +77,18 @@ class PlanValidatorTest {
                 {"goal":"x","steps":[{"command":"mine","args":{"block":"oak_log","count":1}}]}"""), BlockRules.empty());
         assertFalse(v.ok());
         assertTrue(v.errors().get(0).contains("不在允许挖的清单里"), v.errors().toString());
+    }
+
+    @Test
+    void 要掉落物时换成能挖的方块() {
+        PlanValidator.Validated v = PlanValidator.validate(j("""
+                {"goal":"挖 10 个圆石","steps":[{"command":"mine","args":{"block":"cobblestone","count":10}}]}"""), RULES);
+        assertTrue(v.ok(), v.errors().toString());
+        assertEquals("minecraft:stone", v.steps().get(0).args().get("block").getAsString(), "圆石不能直接挖，换成石头");
+        assertEquals("minecraft:cobblestone", v.steps().get(0).args().get("wanted").getAsString());
+        JsonObject single = PlanValidator.normalizeForDispatch(CommandName.MINE, j("{\"block\":\"cobblestone\",\"count\":3}"), RULES);
+        assertEquals("minecraft:stone", single.get("block").getAsString(), "单个动作派发前同样换");
+        assertEquals("minecraft:oak_log", PlanValidator.normalizeForDispatch(CommandName.MINE, j("{\"block\":\"oak_log\"}"), RULES)
+                .get("block").getAsString(), "本来就能挖的不动");
     }
 }

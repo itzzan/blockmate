@@ -6,6 +6,7 @@ import dev.blockmate.server.memory.StoredMessage;
 import java.time.format.DateTimeFormatter;
 import java.time.ZoneId;
 import java.time.Instant;
+import dev.blockmate.server.memory.StoredPlace;
 import dev.blockmate.server.memory.StoredPlan;
 
 import java.util.ArrayList;
@@ -62,6 +63,16 @@ public final class PromptBuilder {
                         .append(p.goal().strip()).append('：').append(outcomeZh(p.outcome())).append('\n');
             }
             sb.append('\n');
+        }
+        if (ctx.places() != null && !ctx.places().isEmpty()) {
+            sb.append("记过的地点（说\"回家\"或\"去 xx\"就能去）：");
+            List<String> names = new ArrayList<>();
+            for (StoredPlace pl : ctx.places()) {
+                names.add(pl.name() + "（" + Math.round(pl.x()) + ", " + Math.round(pl.y()) + ", " + Math.round(pl.z()) + "）");
+            }
+            sb.append(String.join("、", names)).append("\n\n");
+        } else {
+            sb.append("还没记过任何地点：主人说\"记住这里是家\"你就记下 home；没记过家时主人让你回家，要先问家在哪。\n\n");
         }
         return sb.toString().strip();
     }

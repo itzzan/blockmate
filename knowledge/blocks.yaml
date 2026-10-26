@@ -1,4 +1,4 @@
-# 伙伴能挖什么、绝不碰什么、能放什么（知识层，guide-2 任务单 12）
+# 伙伴能挖什么、绝不碰什么、能放什么、挖了掉什么（知识层，guide-2 任务单 12 / 13）
 #
 # 规则只有两条，写在这里以外的地方一律不许挖、不许放：
 #   1. 方块不在 mineable 里 → 不挖。never_touch 只是给人看的说明，提醒哪些东西"看起来像建筑"，程序不用它。
@@ -18,11 +18,9 @@ mineable:
   - minecraft:dark_oak_log
   - minecraft:mangrove_log
   - minecraft:cherry_log
-  # 石头类
+  # 石头类（圆石和深板岩圆石故意不在：野外几乎没有天然圆石，房子的墙倒多半是它；"挖圆石"后台会换成挖石头）
   - minecraft:stone
-  - minecraft:cobblestone
   - minecraft:deepslate
-  - minecraft:cobbled_deepslate
   # 泥沙类
   - minecraft:dirt
   - minecraft:sand
@@ -34,6 +32,17 @@ mineable:
   - minecraft:deepslate_iron_ore
   - minecraft:copper_ore
   - minecraft:deepslate_copper_ore
+
+# 挖掉之后背包里多的是什么（没写的 = 和方块同名）。模组按这个数"挖够了没有"；后台也用它把"挖 10 个圆石"换成"挖石头"。
+drops:
+  minecraft:stone: minecraft:cobblestone
+  minecraft:deepslate: minecraft:cobbled_deepslate
+  minecraft:coal_ore: minecraft:coal
+  minecraft:deepslate_coal_ore: minecraft:coal
+  minecraft:iron_ore: minecraft:raw_iron
+  minecraft:deepslate_iron_ore: minecraft:raw_iron
+  minecraft:copper_ore: minecraft:raw_copper
+  minecraft:deepslate_copper_ore: minecraft:raw_copper
 
 never_touch:
   # 只是说明：这些一看就是别人的东西或房子的一部分，哪怕主人叫它碰也不碰

@@ -238,6 +238,8 @@ class HubIntegrationTest {
                 placeable:
                   - minecraft:crafting_table
                   - minecraft:torch
+                drops:
+                  minecraft:stone: minecraft:cobblestone
                 """);
         app = ServerApp.start(config(), 0, model);
     }
@@ -469,7 +471,8 @@ class HubIntegrationTest {
     private void startPlanAndFailSecond(UiClient ui, dev.blockmate.protocol.Reason reason) throws Exception {
         app.hub().submit(() -> app.hub().startPlan("去弄木头", List.of(
                 step(0, CommandName.COME_HERE, null),
-                step(1, CommandName.GOTO, new Command.GotoArgs(null, null, null, "home")),
+                // 任务单 13 起地点名由 hub 换坐标（没记过就 hub 自己合成失败），所以这里直接给坐标让它派到模组
+                step(1, CommandName.GOTO, new Command.GotoArgs(10.0, 64.0, -20.0, null)),
                 step(2, CommandName.DELIVER, new Command.DeliverArgs("minecraft:oak_log", 8, null))), null));
         waitFor(() -> mockConsole.contains("收到 goto"), 8000, "第二步派出");
         String cmd = app.hub().currentPlan().flatMap(pr -> pr.currentStep()).map(st -> st.command().wire()).orElse("?");
@@ -602,6 +605,57 @@ class HubIntegrationTest {
         assertTrue(model.requests.stream().skip(before).anyMatch(req -> req.messages().get(req.messages().size() - 1).content()
                 .contains("minecraft:chest 不在允许挖的清单里")), "重问时说清是白名单问题");
         waitFor(() -> mockConsole.contains("收到 mine"), 5000, "第二次合法的计划开始执行");
+    }
+
+    @Test
+    void 记住这里是家_存进places_不发模组() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        waitFor(() -> app.hub().lastSnapshotForTest().map(sn -> sn.pos() != null).orElse(false), 3000, "有快照");
+        int before = model.requests.size();
+        ui.send(MessageType.CHAT, new Chat("记住这里是家"));
+        waitFor(() -> memory().place("home").isPresent(), 5000, "places 表有 home");
+        dev.blockmate.server.memory.StoredPlace home = memory().place("home").orElseThrow();
+        assertEquals(app.hub().lastSnapshotForTest().orElseThrow().dim(), home.dim());
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 5000, "单步计划 done");
+        assertFalse(mockConsole.stream().anyMatch(l -> l.contains("remember_place")), "不下发模组：" + mockConsole);
+        waitFor(() -> model.requests.size() == before + 1, 5000, "固定短语不问模型，做完说一句");
+    }
+
+    @Test
+    void 回家_没记过_失败说一句() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        int before = model.requests.size();
+        ui.send(MessageType.CHAT, new Chat("回家"));
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.FAILED).orElse(false), 5000, "没记过家 → 失败");
+        assertFalse(mockConsole.contains("收到 goto"), "没坐标就不派模组：" + mockConsole);
+        waitFor(() -> model.requests.size() == before + 1, 5000, "失败后说一句");
+        List<dev.blockmate.server.gateway.ChatMessage> msgs = model.requests.get(model.requests.size() - 1).messages();
+        String last = msgs.get(msgs.size() - 1).content();
+        assertTrue(last.contains("没记过") || last.contains("地点"), "提示里说清是地点没记过：" + last);
+    }
+
+    @Test
+    void 回家_记过了_派goto带坐标() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        waitFor(() -> app.hub().lastSnapshotForTest().isPresent(), 3000, "有快照");
+        String dim = app.hub().lastSnapshotForTest().map(sn -> sn.dim()).orElse(null);
+        memory().savePlace("home", dim == null ? "minecraft:overworld" : dim, 10, 64, -20);
+        ui.send(MessageType.CHAT, new Chat("回家"));
+        waitFor(() -> mockConsole.contains("收到 goto"), 5000, "换成坐标后派 goto：" + mockConsole);
+        waitFor(() -> app.hub().currentPlan().map(pr -> pr.outcome() == PlanRun.Outcome.DONE).orElse(false), 8000, "done");
+        assertEquals(CommandName.GO_HOME, app.hub().currentPlan().orElseThrow().steps().get(0).command(), "计划里仍是 go_home");
     }
 
     private static JsonObject planArgs(String stepsJson) {

@@ -28,11 +28,16 @@ class KnowledgeTest {
                   - 箱子、门
                 placeable:
                   - crafting_table
+                drops:
+                  stone: cobblestone
+                  minecraft:coal_ore: minecraft:coal
                 """);
         Knowledge k = new Knowledge(dir);
         BlockRules r = k.blockRules();
         assertEquals(java.util.List.of("minecraft:oak_log", "minecraft:stone"), r.mineable());
         assertEquals(java.util.List.of("minecraft:crafting_table"), r.placeable());
+        assertEquals("minecraft:cobblestone", r.dropOf("minecraft:stone"), "drops 两边都补命名空间");
+        assertEquals("minecraft:oak_log", r.dropOf("minecraft:oak_log"));
         assertEquals("", k.planExamples(), "plan_examples.md 不存在就是空串");
     }
 
@@ -58,7 +63,11 @@ class KnowledgeTest {
         assertTrue(r.placeable().contains("minecraft:crafting_table"));
         assertTrue(r.placeable().contains("minecraft:red_bed"));
         assertTrue(r.mineable().stream().noneMatch(s -> s.contains("chest")), "箱子绝不能在可挖清单里");
-        assertEquals(21, r.mineable().size());
+        assertTrue(r.mineable().stream().noneMatch(s -> s.contains("cobble")), "圆石不在可挖清单（任务单 13 决定：墙多半是它）");
+        assertEquals(19, r.mineable().size());
         assertEquals(18, r.placeable().size());
+        assertEquals("minecraft:cobblestone", r.dropOf("minecraft:stone"));
+        assertEquals("minecraft:raw_iron", r.dropOf("minecraft:deepslate_iron_ore"));
+        assertEquals(8, r.dropsOrEmpty().size());
     }
 }

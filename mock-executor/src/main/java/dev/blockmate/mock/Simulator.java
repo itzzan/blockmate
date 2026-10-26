@@ -186,6 +186,12 @@ public final class Simulator {
             }
             case PICK_UP -> new Result.PickUpDetail(8);
             case REJOIN -> new Result.RejoinDetail(1);
+            case GOTO -> new Result.GotoDetail(1.5);
+            case MINE -> {
+                Command.MineArgs a = ProtocolCodec.gson().fromJson(t.args(), Command.MineArgs.class);
+                yield new Result.MineDetail(a == null ? 0 : a.count());
+            }
+            case COLLECT -> new Result.CollectDetail(3);
             default -> null;
         };
         send(MessageType.RESULT, detail == null ? Result.ok(t.commandId()) : Result.ok(t.commandId(), detail));

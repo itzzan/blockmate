@@ -112,7 +112,7 @@ hub 的回复（三个通道相同骨架）：
 
 对 ui，回复的 body 还带 `status`（同第 8 节）和 `history`（最近 N 条 messages，N 来自 config）。对 keeper，还带 `desired`（`running` / `stopped`）。`ok:false` 之后 hub 立刻以 4401 关闭。
 
-对 mc，回复的 body 还带 `rules`（任务单 12）：`{"mineable": ["minecraft:oak_log", …], "placeable": ["minecraft:crafting_table", …]}`，内容来自 `knowledge/blocks.yaml` 的两段（hub 按修改时间热重载，id 统一补 `minecraft:` 小写；文件缺失或坏了就发空清单）。模组只认这一份，不自己读文件；没收到 `rules` 或清单为空 = 什么都不许挖、不许放。模组收到后在 latest.log 打一行"收到白名单 可挖=N 可放=M"，hub 日志 `executor online … rules mineable=N placeable=M`。改了 blocks.yaml 要让伙伴下线再上线才拿到新清单。
+对 mc，回复的 body 还带 `rules`（任务单 12）：`{"mineable": ["minecraft:oak_log", …], "placeable": ["minecraft:crafting_table", …], "drops": {"minecraft:stone": "minecraft:cobblestone", …}}`（drops 是任务单 13 加的"方块到掉落物"对照，模组按它数挖够了没有；老后台不发时模组当空表），内容来自 `knowledge/blocks.yaml` 的三段（hub 按修改时间热重载，id 统一补 `minecraft:` 小写；文件缺失或坏了就发空清单）。模组只认这一份，不自己读文件；没收到 `rules` 或清单为空 = 什么都不许挖、不许放。模组收到后在 latest.log 打一行"收到白名单 可挖=N 可放=M"，hub 日志 `executor online … rules mineable=N placeable=M`。改了 blocks.yaml 要让伙伴下线再上线才拿到新清单。
 
 mock-executor 的 hello 与真模组相同，只是 `mod_version` 写 `mock`。
 
@@ -198,16 +198,16 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 
 | name | args | 说明 |
 | --- | --- | --- |
-| goto | x, y, z 或 place（记过的地点名，如 home / bed） | 走到目标 2 格内；地点没记过回 no_place_known |
-| mine | block（方块 id），count，radius（默认 32） | 在半径内找并挖该方块，直到背包多了 count 个；block 不在 knowledge/blocks.yaml 白名单回 not_allowed；中途卡住 / 找不到回 stuck / item_not_found，detail 带已挖到的数 |
-| collect | radius（默认 8），item（可选，只捡这一种） | 捡半径内所有掉落物 |
+| goto | x, y, z 或 place（记过的地点名，如 home / bed） | 走到目标 2 格内；地点没记过回 no_place_known。【任务单 13】place 由 hub 查 places 表换成坐标再下发（args 里同时带 place 便于日志），模组只认坐标；没记过或记在别的维度，hub 自己合成 failed no_place_known，不发模组 |
+| mine | block（方块 id），count，radius（默认 32，模组最多 48） | 在半径内找并挖该方块，直到背包多了 count 个"该方块的掉落物"（blocks.yaml 的 drops 段：石头掉圆石、铁矿掉粗铁……没写的同名）；block 不在白名单回 not_allowed（人不动）；开挖前半径内（已加载区块）一个都没有回 item_not_found；20 秒没多挖到一个回 stuck；主人在服里却离开 64 格以上（或看不见）回 target_too_far；Baritone 自己停了还没够回 item_not_found；失败时 detail 的 mined 都带已挖数。【任务单 13】hub 派发前把"要掉落物"的请求换成能掉它的方块（block=cobblestone 换成 block=stone，原请求记在 args.wanted），圆石本身不在可挖清单 |
+| collect | radius（默认 8），item（可选，只捡这一种） | 捡半径内所有掉落物；开始时半径内没东西回 item_not_found；背包满回 inventory_full；两倍半径内 2 秒没剩东西算捡完，detail picked = 背包总数增量 |
 | craft | item（物品 id），count（默认 1） | 合成；配方问游戏客户端，没有回 no_recipe，材料不够回 no_materials；需要工作台时模组自己找 8 格内的或放一个再收回 |
 | place | block（只允许 minecraft:crafting_table / minecraft:torch / 自己的床），pos（可选） | 在脚边或指定位置放方块；别的方块回 not_allowed |
 | pickup_block | block（默认 minecraft:crafting_table） | 收回自己放过的方块；只收自己放的，位置模组自己记 |
 | eat | item（可选） | 吃 item 或背包里任意食物；没食物回 no_materials |
 | sleep | — | 走到 8 格内的床或记过的 bed 地点睡下；没床回 no_bed，还没到晚上回 not_night |
-| go_home | — | 等于 goto place=home；没记过回 no_place_known |
-| remember_place | name，pos（可选，默认当前位置） | 记地点，模组和 hub 都存一份；立刻 result ok，不占槽 |
+| go_home | — | 等于 goto place=home；没记过回 no_place_known。【任务单 13】hub 换成坐标后以 goto 下发，计划里仍显示 go_home |
+| remember_place | name，pos（可选，默认当前位置） | 记地点。【任务单 13 改】hub 自己完成、不下发模组：拿最新 snapshot 的 pos / dim 写进 places 表（同名覆盖），合成 result ok（detail {name, pos}）；没有快照（不在世界里）合成 failed no_place_known。名字整理：家 / home / 家里 换成 home，床 / bed 换成 bed。模组不存地点 |
 | use_furnace | input，fuel，count（默认全部） | 用 8 格内的熔炉把 input 烧完并取出；没熔炉回 item_not_found，没燃料回 no_materials |
 
 ### 7.2 ack
@@ -302,7 +302,7 @@ idle ──command 发出──▶ pending ──ack accepted──▶ running �
 
 【细则】
 
-固定短语表（2026-10-22）：主人的话去掉标点空格后正好是「停 / 停下 / 停一下 / 别动 / 站住 / 别跟了」→ stop，「等在这 / 等在这里 / 等在这儿 / 在这等 / 在这等我 / 在这儿等 / 等着 / 待着」→ wait_here，「跟我来 / 跟着我 / 跟上 / 跟我走」→ follow，「过来 / 来我这 / 来我这里 / 到我这来」→ come_here 时，hub 直接按模型调了该工具处理（日志 `chat_in … shortcut=…`），不经过模型；带别的内容的句子和其它说法仍交给模型。起因：6.5 第一批"等在这"10 次里 6 次模型只用文字答应没调工具。system 里人设之后固定加一段"动作规则"（PromptBuilder.ACTION_RULE）。
+固定短语表（2026-10-22；任务单 13 加「回家 / 回家吧 / 回家去」对应 go_home，「记住这里是家 / 记住这是家 / 这里是家 / 这里就是家」对应 remember_place name=home）：主人的话去掉标点空格后正好是「停 / 停下 / 停一下 / 别动 / 站住 / 别跟了」→ stop，「等在这 / 等在这里 / 等在这儿 / 在这等 / 在这等我 / 在这儿等 / 等着 / 待着」→ wait_here，「跟我来 / 跟着我 / 跟上 / 跟我走」→ follow，「过来 / 来我这 / 来我这里 / 到我这来」→ come_here 时，hub 直接按模型调了该工具处理（日志 `chat_in … shortcut=…`），不经过模型；带别的内容的句子和其它说法仍交给模型。起因：6.5 第一批"等在这"10 次里 6 次模型只用文字答应没调工具。system 里人设之后固定加一段"动作规则"（PromptBuilder.ACTION_RULE）。
 
 提示词顺序（2026-10-22 调整，为了让 Ollama 的前缀缓存命中）：system = persona.md 全文 + 「已确认的偏好」列表 + 「最近 3 条日记」（episodes），**不含**每轮都变的状态句；然后是最近 N 条 messages（role 映射：owner→user，companion→assistant，owner_ingame→user 并加前缀"（游戏里说）"）；最后一条 user = 「现在的状态」（snapshot 摘要）+ 空行 + 「主人说：」+ 这次的输入（动作结束后的内部提示不加"主人说"）。调整前状态句在 system 里，每轮缓存只能复用到人设结尾，后面 1000 多 token 全部重算，首字 9 秒。
 
@@ -332,6 +332,7 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
 - 校验（PlanValidator，hub 侧）：steps 非空且 ≤ 8；每步命令在 enum 里；参数按命令查——mine 要 block + count>0 且 block 在 blocks.yaml 的 mineable 里（任务单 12 起，不在就"xx 不在允许挖的清单里"），deliver 要 item + count>0，pick_up / craft 要 item，use_furnace 要 input，remember_place 要 name，place 的 block 必须在 blocks.yaml 的 placeable 里（工作台 / 火把 / 床），goto 要 x/y/z 或 place；item / block / input / fuel 没写命名空间自动补 `minecraft:`。整条有任何一处不合法就拒掉：第一次拒掉时把毛病拼在主人原话后面再问一次模型（"[系统] 你上次给的计划有问题：…。只能用工具列表里的命令和参数，最多 8 步。请重新给一个计划；一个动作就能做完就直接调那个工具。"），两次的文字合成一条伙伴消息；第二次还不合法就对主人说"这件事我没想清楚怎么做（前两条毛病），换个说法再跟我说一遍？"，不开始计划。合法的 make_plan 和单个动作工具一样占"一次只做一件"的名额。
 - 一步失败后的四选一：hub 用只带 `plan_decision(action, say, new_steps)` 工具的请求问模型，user 内容是"[系统] 你在做「目标」这件事，一共 N 步，第 k 步「动作名」没做成：原因。已做完：…。剩余重试额度 r 次。请调用 plan_decision …"。hub 先把 `say` 存成 companion 消息并发到网页（日志 `chat_out … plan_decision=true`），再执行：retry → 同一步重发（整个计划最多 2 次，额度用完算放弃并补一句"重试的次数用完了"）；skip → 当前步 skipped，派下一个 pending 步，没有了按 failed 结束；replan → `new_steps` 走同一套校验（index 接着编），通过就替换掉失败步之后的所有剩余步再派，不通过算放弃并补一句"新步骤我没列对"；abort → failed 结束，say 为空时退回原来的"结果到了说一句"。模型没调工具时按文字里有没有"重试 / 跳过"兜底，否则放弃。
 - 说话：make_plan 那一轮模型的文字就是"打算"，直接当回复；每步 ok 不说；最后一步 ok 时的"说一句"提示改成"主人要的「目标」你全部做完了，最后一步「…」：…"。
+- 【任务单 13】system 里"最近任务"之后加一行「记过的地点（说"回家"或"去 xx"就能去）：home（x, y, z）、…」；一个都没记过时写「还没记过任何地点：主人说"记住这里是家"你就记下 home；没记过家时主人让你回家，要先问家在哪」。
 - 日志：`plan_accepted steps= attempt=`、`plan_rejected attempt= errors=`（errors 是校验短语，不含原话）、`plan_decision plan_id= index= action= say_len=`、`plan_replan plan_id= from_index= new_steps=`、`plan_replan_rejected`、`knowledge loaded file= len=`。
 
 ## 10. Gateway：和 Ollama 怎么说话
@@ -398,6 +399,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
 - 最近的任务（任务单 10）：表 `plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id)`，计划结束时写一行；给模型的 system 里带最近 5 个的"日期 目标：结局"。
+- 地点（任务单 13）：表 `places(name PRIMARY KEY, dim, x, y, z, ts)`，remember_place 写入（同名覆盖），goto place / go_home 查它；全部地点进 system 提示。hub 日志 `place_remembered name= dim=`、`place_resolved name= for=`、`place_unknown name= known=`。
 - 最近 N 条对话：按 ts 倒序取最近 2N 条未删除的 messages，再经 HistoryWindow 做分块滑动：窗口在 N 到 2N 条之间，满 2N 条时一次砍回 N 条，而不是每轮掉一条，这样提示前缀只在每 N 条消息变一次（N 来自 config.history_n，默认 20）。网页 hello 回复里带的 history 仍是最近 N 条。
 
 ## 12. config.yaml 与 persona.md
@@ -493,7 +495,7 @@ keeper_status：
 - 重连 / 重生后的顺序：完整 snapshot → `joined` 事件 → 才接受新 command；在此之前收到的 command 回 `ack accepted:false, reason:rejected`。
 - 所有 Baritone 设置在进入世界时写死：allowBreak / allowPlace / allowParkour / allowInventory = false，followRadius = 3，并把这几项的值打一行 `[companion] baritone settings …` 到 latest.log。
 
-【任务单 12】模组里所有会破坏或放置方块的代码只能问 `Rules`（hello 下发的白名单）和走 `BreakGuard`（Baritone 开关的唯一入口）：寻路阶段 `allowBreak` 永远 false；挖目标方块时不开 allowBreak，而是把目标方块填进 Baritone 1.10.5 的 `allowBreakAnyway`，任务结束 / 失败 / 取消 / 停 / 断线 / 离开世界立刻清空；放方块时 `allowPlace` 只在放那一下打开然后关回。进世界时 `blockBreakAdditionalPenalty` 和 `blockPlacementPenalty` 都设 100，让寻路宁可绕路。每次开关变化在 latest.log 打 `guard break=[…] place=… reason=…`。
+【任务单 12】模组里所有会破坏或放置方块的代码只能问 `Rules`（hello 下发的白名单）和走 `BreakGuard`（Baritone 开关的唯一入口）：寻路阶段 `allowBreak` 永远 false；挖的时候不开 allowBreak，而是把整张可挖清单（不只是目标方块：要能挖穿泥土、石头才够得着矿）填进 Baritone 1.10.5 的 `allowBreakAnyway`，任务结束 / 失败 / 取消 / 停 / 断线 / 离开世界立刻清空；放方块时 `allowPlace` 只在放那一下打开然后关回。进世界时 `blockBreakAdditionalPenalty` 和 `blockPlacementPenalty` 都设 100，让寻路宁可绕路。每次开关变化在 latest.log 打 `guard break=[…] place=… reason=…`。
 
 ## 16. 日志规范
 

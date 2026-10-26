@@ -101,12 +101,62 @@ public final class Memory implements AutoCloseable {
               id TEXT PRIMARY KEY, goal TEXT NOT NULL, steps_json TEXT NOT NULL, outcome TEXT NOT NULL,
               started_ts INTEGER NOT NULL, ended_ts INTEGER NOT NULL, source_message_id TEXT)""",
             "CREATE INDEX IF NOT EXISTS plans_ended ON plans(ended_ts)",
+            // 任务单 13：记过的地点（home / bed / 主人起的名字），hub 是唯一的存处
+            """
+            CREATE TABLE IF NOT EXISTS places (
+              name TEXT PRIMARY KEY, dim TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL,
+              ts INTEGER NOT NULL)""",
         };
         try (Statement st = conn.createStatement()) {
             for (String sql : ddl) {
                 st.execute(sql);
             }
         }
+    }
+
+    // ---------- places（任务单 13） ----------
+
+    /** 记地点：同名覆盖。 */
+    public void savePlace(String name, String dim, double x, double y, double z) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO places(name, dim, x, y, z, ts) VALUES (?, ?, ?, ?, ?, ?) "
+                        + "ON CONFLICT(name) DO UPDATE SET dim=excluded.dim, x=excluded.x, y=excluded.y, z=excluded.z, ts=excluded.ts")) {
+            ps.setString(1, name);
+            ps.setString(2, dim);
+            ps.setDouble(3, x);
+            ps.setDouble(4, y);
+            ps.setDouble(5, z);
+            ps.setLong(6, System.currentTimeMillis());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+    }
+
+    public Optional<StoredPlace> place(String name) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT name, dim, x, y, z, ts FROM places WHERE name=?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(new StoredPlace(rs.getString(1), rs.getString(2), rs.getDouble(3), rs.getDouble(4),
+                        rs.getDouble(5), rs.getLong(6))) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+    }
+
+    public List<StoredPlace> places() {
+        List<StoredPlace> out = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement("SELECT name, dim, x, y, z, ts FROM places ORDER BY ts");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(new StoredPlace(rs.getString(1), rs.getString(2), rs.getDouble(3), rs.getDouble(4), rs.getDouble(5),
+                        rs.getLong(6)));
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return out;
     }
 
     // ---------- messages ----------

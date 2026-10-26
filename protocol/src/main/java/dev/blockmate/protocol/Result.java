@@ -59,6 +59,10 @@ public record Result(String commandId, ResultStatus status, Reason reason, JsonO
     public record CollectDetail(int picked) {
     }
 
+    /** remember_place（任务单 13，hub 自己完成）：记下的名字和位置。 */
+    public record RememberPlaceDetail(String name, Pos pos) {
+    }
+
     /** craft：合成出的数量。 */
     public record CraftDetail(int crafted) {
     }

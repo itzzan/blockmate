@@ -148,5 +148,10 @@ class BodyRecordsTest {
         assertEquals(1, mc.rules().mineable().size(), "回模组的 hello 带白名单");
         assertTrue(ProtocolCodec.gson().toJson(mc).contains("\"rules\":{\"mineable\""));
         assertTrue(BlockRules.empty().placeable().isEmpty(), "空清单 = 什么都不许");
+        BlockRules withDrops = new BlockRules(java.util.List.of("minecraft:stone"), java.util.List.of(),
+                java.util.Map.of("minecraft:stone", "minecraft:cobblestone"));
+        assertEquals("minecraft:cobblestone", withDrops.dropOf("minecraft:stone"), "石头掉圆石");
+        assertEquals("minecraft:oak_log", withDrops.dropOf("minecraft:oak_log"), "没写的和方块同名");
+        assertEquals("minecraft:dirt", new BlockRules(java.util.List.of(), java.util.List.of(), null).dropOf("minecraft:dirt"), "老后台没发 drops 也不炸");
     }
 }

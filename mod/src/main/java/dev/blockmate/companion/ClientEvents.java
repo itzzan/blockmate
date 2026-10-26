@@ -123,7 +123,7 @@ public final class ClientEvents {
                 HelloOk ok = ProtocolCodec.bodyAs(env, HelloOk.class);
                 if (ok.ok()) {
                     if (ok.rules() != null) {
-                        Rules rules = Rules.of(ok.rules().mineable(), ok.rules().placeable());
+                        Rules rules = Rules.of(ok.rules().mineable(), ok.rules().placeable(), ok.rules().dropsOrEmpty());
                         executor.setRules(rules);
                         CompanionMod.LOG.info(CompanionMod.TAG + "hub hello ok; 收到白名单 可挖={} 可放={}", rules.mineableCount(),
                                 rules.placeableCount());

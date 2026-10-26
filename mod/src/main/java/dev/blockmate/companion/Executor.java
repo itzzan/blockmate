@@ -35,7 +35,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin。
+ * executor（手册 6.4）：follow / come_here / wait_here / stop / pick_up / deliver / rejoin；任务单 13 加 goto / mine / collect。
  * 单任务槽：新 command 到达先给旧任务回 result cancelled，再回新任务的 ack。全部在游戏线程上。
  */
 public final class Executor implements AbstractGameEventListener {
@@ -54,6 +54,12 @@ public final class Executor implements AbstractGameEventListener {
     private static final int PICKUP_NONE_LEFT_TICKS = 40; // 半径内没东西了再等 2 秒就放弃
     private static final int BACK_OFF_MAX_TICKS = 100;
     private static final long CONFIRM_WINDOW_MS = 10_000; // 丢出后等确认 10 秒
+    // 任务单 13
+    private static final int MINE_STALL_TICKS = 400;      // 20 秒没多挖到一个算卡住
+    private static final int MINE_PROGRESS_TICKS = 60;    // 每 3 秒报一次已挖数
+    private static final int MINE_GRACE_TICKS = 60;       // 开挖后 3 秒内 Baritone 还没动起来不算"找不到"
+    private static final int MINE_MAX_RADIUS = 48;
+    private static final int COLLECT_NONE_LEFT_TICKS = 40; // 半径内没剩东西再等 2 秒就算捡完
 
     private enum Phase { APPROACH, THROW, BACK_OFF, WAIT_CONFIRM }
 
@@ -74,6 +80,12 @@ public final class Executor implements AbstractGameEventListener {
         int radius;
         int startCount;
         int noneLeftSince = -1;
+        // mine / collect（任务单 13）
+        String blockId;
+        net.minecraft.world.level.block.Block block;
+        GatherLogic.MineProgress mine;
+        int lastProgressTick;
+        int collectStart;
         // deliver
         Phase phase = Phase.APPROACH;
         String targetName;
@@ -173,6 +185,9 @@ public final class Executor implements AbstractGameEventListener {
             case PICK_UP -> startPickUp(env.id(), cmd.args(), mc);
             case DELIVER -> startDeliver(env.id(), cmd.args(), mc);
             case REJOIN -> startRejoin(env.id(), mc);
+            case GOTO -> startGoto(env.id(), cmd.args(), mc);
+            case MINE -> startMine(env.id(), cmd.args(), mc);
+            case COLLECT -> startCollect(env.id(), cmd.args(), mc);
             default -> {
                 // 任务单 9 加的新命令，模组还没实现：按 handbook 7.1 立刻拒绝，别让 hub 等 3 秒判无响应
                 CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
@@ -365,9 +380,262 @@ public final class Executor implements AbstractGameEventListener {
             case STOP -> tickStop(mc, me);
             case PICK_UP -> tickPickUp(mc, me);
             case DELIVER -> tickDeliver(mc, me);
+            case GOTO -> tickGoto(mc, me);
+            case MINE -> tickMine(mc, me);
+            case COLLECT -> tickCollect(mc, me);
             default -> {
             }
         }
+    }
+
+    // ---------------- 任务单 13：goto / mine / collect ----------------
+
+    /** goto 只认坐标；地点名由后台换成坐标再发来。 */
+    private void startGoto(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        send(MessageType.ACK, Ack.accepted(id));
+        if (args == null || !args.has("x") || !args.has("y") || !args.has("z")) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "goto: no coordinates -> no_place_known");
+            finish(Result.failed(id, Reason.NO_PLACE_KNOWN));
+            return;
+        }
+        Task t = new Task(id, CommandName.GOTO, args, tick);
+        t.devGoal = new Pos(args.get("x").getAsDouble(), args.get("y").getAsDouble(), args.get("z").getAsDouble());
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        current = t;
+        setGoal(b, t, goalPos(null, t), 2);
+        CompanionMod.LOG.info(CompanionMod.TAG + "goto started target={} place={}", t.devGoal,
+                args.has("place") ? args.get("place").getAsString() : "-");
+    }
+
+    private void tickGoto(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        IBaritone b = BaritoneBridge.baritone();
+        Vec3 target = new Vec3(t.devGoal.x(), t.devGoal.y(), t.devGoal.z());
+        double dist = me.position().distanceTo(target);
+        if (dist <= ARRIVE_DISTANCE) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.ok(t.id, new Result.GotoDetail(round(dist))));
+            return;
+        }
+        if (t.pathFailed) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.PATH_FAILED, new Result.GotoDetail(round(dist))));
+            return;
+        }
+        if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.STUCK, new Result.GotoDetail(round(dist))));
+            return;
+        }
+        if (tick - t.lastProgressTick >= MINE_PROGRESS_TICKS) {
+            t.lastProgressTick = tick;
+            send(MessageType.PROGRESS, new Progress(t.id, "distance", round(dist), Observer.pos(me)));
+        }
+        if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS) {
+            boolean idle = !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive();
+            if (idle) {
+                setGoal(b, t, goalPos(null, t), 2);
+            }
+        }
+    }
+
+    private void startMine(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        send(MessageType.ACK, Ack.accepted(id));
+        Command.MineArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.MineArgs.class);
+        String blockId = a == null || a.block() == null ? "" : Rules.normalize(a.block());
+        int wanted = a == null ? 1 : Math.max(1, a.count());
+        int radius = Math.min(MINE_MAX_RADIUS, Math.max(4, a == null ? 32 : a.radiusOrDefault()));
+        if (!rules.canMine(blockId)) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "mine: {} not in whitelist (received={}) -> not_allowed", blockId, rules.received());
+            finish(Result.failed(id, Reason.NOT_ALLOWED, new Result.MineDetail(0)));
+            return;
+        }
+        ResourceLocation rl = ResourceLocation.tryParse(blockId);
+        net.minecraft.world.level.block.Block block = rl == null ? null : ForgeRegistries.BLOCKS.getValue(rl);
+        if (block == null || block == net.minecraft.world.level.block.Blocks.AIR) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "mine: unknown block {} -> not_allowed", blockId);
+            finish(Result.failed(id, Reason.NOT_ALLOWED, new Result.MineDetail(0)));
+            return;
+        }
+        LocalPlayer me = mc.player;
+        int nearby = countBlocksAround(mc, me.blockPosition(), block, radius);
+        if (nearby == 0) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "mine: no {} within {} blocks -> item_not_found", blockId, radius);
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND, new Result.MineDetail(0)));
+            return;
+        }
+        String drop = rules.dropOf(blockId);
+        Task t = new Task(id, CommandName.MINE, args, tick);
+        t.blockId = blockId;
+        t.block = block;
+        t.item = drop;
+        t.mine = new GatherLogic.MineProgress(countItem(me, drop), wanted, MINE_STALL_TICKS, tick);
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS * 4, STUCK_MIN_MOVE); // 挖的时候本来就站着不动，放宽到 20 秒
+        t.lastProgressTick = tick;
+        current = t;
+        // 放行整张可挖清单而不只是目标：要能挖穿泥土 / 石头才够得着矿；清单外的（箱子、墙砖……）仍然碰不得
+        List<net.minecraft.world.level.block.Block> allowed = new ArrayList<>();
+        for (String idStr : rules.mineableIds()) {
+            ResourceLocation r = ResourceLocation.tryParse(idStr);
+            net.minecraft.world.level.block.Block bl = r == null ? null : ForgeRegistries.BLOCKS.getValue(r);
+            if (bl != null && bl != net.minecraft.world.level.block.Blocks.AIR) {
+                allowed.add(bl);
+            }
+        }
+        BreakGuard.allowBreakOnly(allowed, "mine " + blockId);
+        b.getMineProcess().mine(block);
+        CompanionMod.LOG.info(CompanionMod.TAG + "mine started block={} drop={} wanted={} nearby={} radius={}", blockId, drop, wanted,
+                nearby, radius);
+    }
+
+    private void tickMine(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        IBaritone b = BaritoneBridge.baritone();
+        int now = countItem(me, t.item);
+        GatherLogic.MineProgress.Verdict v = t.mine.feed(now, tick);
+        if (v == GatherLogic.MineProgress.Verdict.DONE) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.ok(t.id, new Result.MineDetail(t.mine.mined())));
+            return;
+        }
+        if (v == GatherLogic.MineProgress.Verdict.STALLED) {
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "mine: no progress for {} ticks -> stuck (mined {})", MINE_STALL_TICKS, t.mine.mined());
+            finish(Result.failed(t.id, Reason.STUCK, new Result.MineDetail(t.mine.mined())));
+            return;
+        }
+        Player owner = findOwner(mc);
+        boolean ownerOnline = mc.getConnection() != null && mc.getConnection().getOnlinePlayers().stream()
+                .anyMatch(i -> ClientConfig.OWNER_NAME.get().equals(i.getProfile().getName()));
+        if (GatherLogic.tooFarFromOwner(ownerOnline, owner != null, owner == null ? 0 : me.distanceTo(owner))) {
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "mine: too far from owner (visible={}) -> target_too_far (mined {})", owner != null, t.mine.mined());
+            finish(Result.failed(t.id, Reason.TARGET_TOO_FAR, new Result.MineDetail(t.mine.mined())));
+            return;
+        }
+        if (b != null && tick - t.startTick > MINE_GRACE_TICKS && !b.getMineProcess().isActive()
+                && !b.getPathingBehavior().isPathing()) {
+            // Baritone 自己收手了（附近这种方块挖光了 / 够不着）
+            CompanionMod.LOG.info(CompanionMod.TAG + "mine: baritone idle -> item_not_found (mined {})", t.mine.mined());
+            finish(Result.failed(t.id, Reason.ITEM_NOT_FOUND, new Result.MineDetail(t.mine.mined())));
+            return;
+        }
+        if (tick - t.lastProgressTick >= MINE_PROGRESS_TICKS) {
+            t.lastProgressTick = tick;
+            send(MessageType.PROGRESS, new Progress(t.id, "mined", (double) t.mine.mined(), Observer.pos(me)));
+        }
+    }
+
+    private void startCollect(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        send(MessageType.ACK, Ack.accepted(id));
+        Command.CollectArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.CollectArgs.class);
+        String only = a == null ? null : normalizeItem(a.item());
+        int radius = Math.max(2, a == null ? 8 : a.radiusOrDefault());
+        LocalPlayer me = mc.player;
+        if (findAnyItems(mc, me, only, radius).isEmpty()) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "collect: nothing within {} blocks (item={}) -> item_not_found", radius, only);
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND, new Result.CollectDetail(0)));
+            return;
+        }
+        if (me.getInventory().getFreeSlot() == -1) {
+            finish(Result.failed(id, Reason.INVENTORY_FULL, new Result.CollectDetail(0)));
+            return;
+        }
+        Task t = new Task(id, CommandName.COLLECT, args, tick);
+        t.item = only;
+        t.radius = radius;
+        t.collectStart = totalItems(me);
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        current = t;
+        final String want = only;
+        b.getFollowProcess().pickup(stack -> want == null || want.equals(idOf(stack)));
+        CompanionMod.LOG.info(CompanionMod.TAG + "collect started item={} radius={}", only == null ? "any" : only, radius);
+    }
+
+    private void tickCollect(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        int picked = Math.max(0, totalItems(me) - t.collectStart);
+        boolean leftNearby = !findAnyItems(mc, me, t.item, t.radius * 2).isEmpty();
+        if (!leftNearby) {
+            if (t.noneLeftSince < 0) {
+                t.noneLeftSince = tick;
+            } else if (tick - t.noneLeftSince >= COLLECT_NONE_LEFT_TICKS) {
+                BaritoneBridge.cancelEverything();
+                finish(Result.ok(t.id, new Result.CollectDetail(picked)));
+                return;
+            }
+        } else {
+            t.noneLeftSince = -1;
+        }
+        if (leftNearby && me.getInventory().getFreeSlot() == -1 && tick - t.startTick > 20) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.INVENTORY_FULL, new Result.CollectDetail(picked)));
+            return;
+        }
+        if (t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick)) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.STUCK, new Result.CollectDetail(picked)));
+            return;
+        }
+        if (tick - t.lastProgressTick >= MINE_PROGRESS_TICKS) {
+            t.lastProgressTick = tick;
+            send(MessageType.PROGRESS, new Progress(t.id, "picked", (double) picked, Observer.pos(me)));
+        }
+    }
+
+    /** 半径立方体里数这种方块有几个（只看已加载区块；radius ≤ 48 时最多 90 万格，开挖时算一次）。 */
+    static int countBlocksAround(Minecraft mc, BlockPos center, net.minecraft.world.level.block.Block block, int radius) {
+        int n = 0;
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        int minY = Math.max(mc.level.getMinBuildHeight(), center.getY() - radius);
+        int maxY = Math.min(mc.level.getMaxBuildHeight() - 1, center.getY() + radius);
+        for (int x = center.getX() - radius; x <= center.getX() + radius; x++) {
+            for (int z = center.getZ() - radius; z <= center.getZ() + radius; z++) {
+                if (!mc.level.hasChunkAt(p.set(x, 64, z))) {
+                    continue;
+                }
+                for (int y = minY; y <= maxY; y++) {
+                    if (mc.level.getBlockState(p.set(x, y, z)).is(block)) {
+                        n++;
+                    }
+                }
+            }
+        }
+        return n;
+    }
+
+    static List<ItemEntity> findAnyItems(Minecraft mc, LocalPlayer me, String item, int radius) {
+        return mc.level.getEntitiesOfClass(ItemEntity.class, me.getBoundingBox().inflate(radius),
+                e -> item == null || item.equals(idOf(e.getItem())));
+    }
+
+    static int totalItems(LocalPlayer me) {
+        int n = 0;
+        for (ItemStack s : me.getInventory().items) {
+            n += s.getCount();
+        }
+        for (ItemStack s : me.getInventory().offhand) {
+            n += s.getCount();
+        }
+        return n;
     }
 
     private void tickFollow(Minecraft mc, LocalPlayer me) {

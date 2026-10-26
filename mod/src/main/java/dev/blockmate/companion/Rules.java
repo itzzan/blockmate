@@ -1,7 +1,9 @@
 package dev.blockmate.companion;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -10,20 +12,43 @@ import java.util.Set;
  */
 public final class Rules {
 
-    public static final Rules EMPTY = new Rules(Set.of(), Set.of(), false);
+    public static final Rules EMPTY = new Rules(Set.of(), Set.of(), Map.of(), false);
 
     private final Set<String> mineable;
     private final Set<String> placeable;
+    private final Map<String, String> drops;
     private final boolean received;
 
-    private Rules(Set<String> mineable, Set<String> placeable, boolean received) {
+    private Rules(Set<String> mineable, Set<String> placeable, Map<String, String> drops, boolean received) {
         this.mineable = mineable;
         this.placeable = placeable;
+        this.drops = drops;
         this.received = received;
     }
 
     public static Rules of(Collection<String> mineable, Collection<String> placeable) {
-        return new Rules(normalizeAll(mineable), normalizeAll(placeable), true);
+        return of(mineable, placeable, null);
+    }
+
+    /** @param drops 方块 → 挖掉后得到的物品（任务单 13），可为 null */
+    public static Rules of(Collection<String> mineable, Collection<String> placeable, Map<String, String> drops) {
+        Map<String, String> d = new LinkedHashMap<>();
+        if (drops != null) {
+            drops.forEach((k, v) -> {
+                String nk = normalize(k);
+                String nv = normalize(v);
+                if (!nk.isEmpty() && !nv.isEmpty()) {
+                    d.put(nk, nv);
+                }
+            });
+        }
+        return new Rules(normalizeAll(mineable), normalizeAll(placeable), Map.copyOf(d), true);
+    }
+
+    /** 这种方块挖掉后背包里多的是什么；没写的和方块同名。 */
+    public String dropOf(String blockId) {
+        String b = normalize(blockId);
+        return drops.getOrDefault(b, b);
     }
 
     /** 收到过后台的清单没有（没收到 = 全不许，而且说明 hello 不对）。 */
@@ -41,6 +66,11 @@ public final class Rules {
 
     public int mineableCount() {
         return mineable.size();
+    }
+
+    /** 全部可挖的方块 id（挖矿时整张清单放行，才能挖穿泥土、石头够到矿）。 */
+    public Set<String> mineableIds() {
+        return mineable;
     }
 
     public int placeableCount() {

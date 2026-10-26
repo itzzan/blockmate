@@ -67,6 +67,9 @@ public final class PlanValidator {
             }
             JsonObject args = o.has("args") && o.get("args").isJsonObject() ? o.getAsJsonObject("args") : new JsonObject();
             normalizeIds(args);
+            if (name == CommandName.MINE) {
+                remapDrop(args, r);
+            }
             String problem = checkArgs(name, args, r);
             if (problem != null) {
                 errors.add("第 " + shown + " 步（" + wire + "）" + problem);
@@ -75,6 +78,37 @@ public final class PlanValidator {
             idx++;
         }
         return out;
+    }
+
+    /**
+     * 派发前的整理（任务单 13），单个动作和计划里的步都走：补命名空间；mine 的目标是"掉落物"而不是方块时换成能挖的那种方块
+     * （"挖 10 个圆石"→ 挖石头，石头掉的就是圆石）。返回新对象，不改原参数。
+     */
+    public static JsonObject normalizeForDispatch(CommandName name, JsonObject args, BlockRules rules) {
+        JsonObject a = args == null ? new JsonObject() : args.deepCopy();
+        normalizeIds(a);
+        if (name == CommandName.MINE) {
+            remapDrop(a, rules == null ? BlockRules.empty() : rules);
+        }
+        return a;
+    }
+
+    /** block 不在可挖清单、但正好是某种可挖方块的掉落物 → 换成那种方块，原来要的东西记在 wanted 里。 */
+    static void remapDrop(JsonObject a, BlockRules rules) {
+        if (!a.has("block") || a.get("block").isJsonNull()) {
+            return;
+        }
+        String b = a.get("block").getAsString();
+        if (rules.mineable().contains(b)) {
+            return;
+        }
+        for (java.util.Map.Entry<String, String> e : rules.dropsOrEmpty().entrySet()) {
+            if (e.getValue().equals(b) && rules.mineable().contains(e.getKey())) {
+                a.addProperty("block", e.getKey());
+                a.addProperty("wanted", b);
+                return;
+            }
+        }
     }
 
     /** 物品 / 方块 id 没写命名空间就补 minecraft:。 */

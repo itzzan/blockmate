@@ -4,6 +4,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import dev.blockmate.protocol.Ack;
 import dev.blockmate.protocol.BlockRules;
+import dev.blockmate.protocol.Pos;
+import dev.blockmate.protocol.Reason;
 import dev.blockmate.protocol.Chat;
 import dev.blockmate.protocol.Command;
 import dev.blockmate.protocol.CommandName;
@@ -42,6 +44,7 @@ import dev.blockmate.server.memory.Memory;
 import dev.blockmate.server.memory.Preference;
 import dev.blockmate.server.memory.StoredEvent;
 import dev.blockmate.server.memory.StoredMessage;
+import dev.blockmate.server.memory.StoredPlace;
 import dev.blockmate.server.memory.StoredPlan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -318,6 +321,11 @@ public final class Hub {
         return planCommandId;
     }
 
+    /** 测试用：最新快照。 */
+    public Optional<Snapshot> lastSnapshotForTest() {
+        return Optional.ofNullable(lastSnapshot);
+    }
+
     private void dispatchNext() {
         Optional<PlanRun.Step> next = plan.advance();
         if (next.isEmpty()) {
@@ -328,9 +336,85 @@ public final class Hub {
             return;
         }
         PlanRun.Step step = next.get();
-        planCommandId = issueCommand(step.command(), step.args(), plan.sourceMessageId());
+        JsonObject args = PlanValidator.normalizeForDispatch(step.command(), step.args(), knowledge.blockRules());
         log.info("plan_step plan_id={} index={} command={} state=running", plan.planId(), step.index(), step.command().wire());
+        if (step.command() == CommandName.REMEMBER_PLACE) {
+            rememberPlace(step, args);
+            return;
+        }
+        CommandName wire = step.command();
+        if (step.command() == CommandName.GO_HOME || (step.command() == CommandName.GOTO && !hasPos(args))) {
+            String placeName = step.command() == CommandName.GO_HOME ? "home"
+                    : normalizePlaceName(args.has("place") && !args.get("place").isJsonNull() ? args.get("place").getAsString() : "");
+            Optional<StoredPlace> p = memory.place(placeName);
+            String hereDim = lastSnapshot != null ? lastSnapshot.dim() : null;
+            if (p.isEmpty() || (hereDim != null && p.get().dim() != null && !hereDim.equals(p.get().dim()))) {
+                log.info("place_unknown name={} known={} same_dim={}", placeName, p.isPresent(), p.isPresent() && hereDim == null);
+                synthStep(step, id -> Result.failed(id, Reason.NO_PLACE_KNOWN));
+                return;
+            }
+            JsonObject g = new JsonObject();
+            g.addProperty("x", p.get().x());
+            g.addProperty("y", p.get().y());
+            g.addProperty("z", p.get().z());
+            g.addProperty("place", placeName);
+            args = g;
+            wire = CommandName.GOTO;
+            log.info("place_resolved name={} for={}", placeName, step.command().wire());
+        }
+        planCommandId = issueCommand(wire, args, plan.sourceMessageId());
         pushPlan();
+    }
+
+    private static boolean hasPos(JsonObject a) {
+        return a.has("x") && a.has("y") && a.has("z") && !a.get("x").isJsonNull() && !a.get("y").isJsonNull()
+                && !a.get("z").isJsonNull();
+    }
+
+    /** "家" / "home" / "Home " 都算 home，"床" 算 bed，其余小写去空格。 */
+    static String normalizePlaceName(String raw) {
+        String n = raw == null ? "" : raw.strip().toLowerCase();
+        return switch (n) {
+            case "家", "home", "家里", "我家" -> "home";
+            case "床", "bed" -> "bed";
+            default -> n;
+        };
+    }
+
+    /** remember_place 由 hub 自己完成（任务单 13）：拿最新快照的位置存进 places 表，不下发模组。 */
+    private void rememberPlace(PlanRun.Step step, JsonObject args) {
+        String name = normalizePlaceName(args.has("name") && !args.get("name").isJsonNull() ? args.get("name").getAsString() : "");
+        if (name.isEmpty()) {
+            name = "home";
+        }
+        if (lastSnapshot == null || lastSnapshot.pos() == null || !lastSnapshot.inWorld()) {
+            log.info("place_remember_failed name={} reason=no_snapshot", name);
+            synthStep(step, id -> Result.failed(id, Reason.NO_PLACE_KNOWN));
+            return;
+        }
+        Pos pos = lastSnapshot.pos();
+        String dim = lastSnapshot.dim() == null ? "minecraft:overworld" : lastSnapshot.dim();
+        memory.savePlace(name, dim, pos.x(), pos.y(), pos.z());
+        log.info("place_remembered name={} dim={}", name, dim);
+        String finalName = name;
+        synthStep(step, id -> Result.ok(id, new Result.RememberPlaceDetail(finalName, pos)));
+    }
+
+    /** hub 自己完成的一步：不发模组，直接合成结果走计划流程（像模组立刻回了 result 一样）。 */
+    private void synthStep(PlanRun.Step step, java.util.function.Function<String, Result> make) {
+        String id = UUID.randomUUID().toString();
+        commandNames.put(id, step.command());
+        if (plan.sourceMessageId() != null) {
+            commandSource.put(id, plan.sourceMessageId());
+        }
+        planCommandId = id;
+        Result r = make.apply(id);
+        memory.saveEvent("command", id, plan.sourceMessageId(), obj("name", step.command().wire()));
+        memory.saveEvent("result", id, plan.sourceMessageId(), ProtocolCodec.toBody(r));
+        log.info("command name={} cmd_id={} synth=hub", step.command().wire(), id);
+        log.info("result_synth cmd_id={} status={} reason={}", id, r.status(), r.reason());
+        pushPlan();
+        submit(() -> onStepResult(r));
     }
 
     /** 当前步的结果（真的或 hub 合成的）。 */
@@ -565,7 +649,7 @@ public final class Hub {
         if (shortcut.isPresent()) {
             // 固定短语：不经过模型，直接当作模型调了这个工具（动作结束后照旧让它说一句）
             log.info("chat_in len={} msg_id={} shortcut={}", text.length(), msg.id(), shortcut.get().wire());
-            ToolCall call = new ToolCall("shortcut-" + replyId.substring(0, 8), shortcut.get().wire(), new JsonObject());
+            ToolCall call = new ToolCall("shortcut-" + replyId.substring(0, 8), shortcut.get().wire(), Shortcuts.argsFor(shortcut.get()));
             onDecision(replyId, env.id(), msg, new ModelReply("", List.of(call), 0, 0, 0), 0, "");
             return;
         }
@@ -1015,7 +1099,7 @@ public final class Hub {
     private BrainContext context() {
         List<String> prefs = memory.preferences("active").stream().map(Preference::text).toList();
         return new BrainContext(lastSnapshot, mcOnline, prefs, memory.recentEpisodes(3),
-                historyWindow.select(memory.recentMessages(cfg.historyN * 2)), memory.recentPlans(5));
+                historyWindow.select(memory.recentMessages(cfg.historyN * 2)), memory.recentPlans(5), memory.places());
     }
 
     // ---------------- 日记与备份 ----------------
