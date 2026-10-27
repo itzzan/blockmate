@@ -22,7 +22,7 @@ public final class GatherLogic {
         return distance > MAX_OWNER_DISTANCE;
     }
 
-    /** 按背包里掉落物的数量判断挖够了没有、多久没多一个。 */
+    /** 按背包里掉落物的数量判断挖够了没有、多久没多一个；人在走动也算有进展（2026-10-27 真游戏预检：站着不动 20 秒才算卡）。 */
     public static final class MineProgress {
         public enum Verdict { CONTINUE, DONE, STALLED }
 
@@ -42,8 +42,15 @@ public final class GatherLogic {
         }
 
         public Verdict feed(int nowCount, int tick) {
+            return feed(nowCount, false, tick);
+        }
+
+        /** @param moving 这段时间人在动（走向目标、挖穿泥土都算有进展，只是背包还没多东西） */
+        public Verdict feed(int nowCount, boolean moving, int tick) {
             if (nowCount > lastCount) {
                 lastCount = nowCount;
+                lastIncreaseTick = tick;
+            } else if (moving) {
                 lastIncreaseTick = tick;
             }
             if (mined() >= wanted) {

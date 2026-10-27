@@ -1650,7 +1650,7 @@ public final class Executor implements AbstractGameEventListener {
         t.block = block;
         t.item = drop;
         t.mine = new GatherLogic.MineProgress(countItem(me, drop), wanted, MINE_STALL_TICKS, tick);
-        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS * 4, STUCK_MIN_MOVE); // 挖的时候本来就站着不动，放宽到 20 秒
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE); // 只用来判断"这 5 秒动没动"，卡不卡由 MineProgress 定
         t.lastProgressTick = tick;
         current = t;
         // 放行整张可挖清单而不只是目标：要能挖穿泥土 / 石头才够得着矿；清单外的（箱子、墙砖……）仍然碰不得
@@ -1672,7 +1672,9 @@ public final class Executor implements AbstractGameEventListener {
         Task t = current;
         IBaritone b = BaritoneBridge.baritone();
         int now = countItem(me, t.item);
-        GatherLogic.MineProgress.Verdict v = t.mine.feed(now, tick);
+        // 走向目标、挖穿泥土时背包不会多东西，但人在动：动了就不算卡（真游戏预检里 20 秒刚好够不着石头）
+        boolean moving = !t.stuck.feed(me.getX(), me.getY(), me.getZ(), tick) && t.stuck.movedRecently(tick);
+        GatherLogic.MineProgress.Verdict v = t.mine.feed(now, moving, tick);
         if (v == GatherLogic.MineProgress.Verdict.DONE) {
             BaritoneBridge.cancelEverything();
             finish(Result.ok(t.id, new Result.MineDetail(t.mine.mined())));

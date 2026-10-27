@@ -7,6 +7,7 @@ import dev.blockmate.protocol.Peer;
 import dev.blockmate.protocol.ProtocolCodec;
 import dev.blockmate.protocol.ProtocolException;
 
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -27,7 +28,9 @@ public final class HubClient implements WebSocket.Listener {
     private final ScheduledExecutorService exec;
     private final Consumer<Envelope> onMessage;
     private final Runnable onConnected;
-    private final HttpClient http = HttpClient.newHttpClient();
+    // 后台在 Tailscale 网里，永远直连：这台机器的 JVM 带着 Clash 的 HTTP 代理设置，默认的 HttpClient 会把握手送去代理，
+    // 代理一拒绝（2026-10-27 凌晨 Clash 规则变了，回 403）keeper 就"后台连不上"
+    private final HttpClient http = HttpClient.newBuilder().proxy(ProxySelector.of(null)).build();
     private final StringBuilder partial = new StringBuilder();
     private WebSocket ws;
     private CompletableFuture<?> sendChain = CompletableFuture.completedFuture(null);

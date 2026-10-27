@@ -36,6 +36,11 @@ public final class StuckDetector {
         return tick - lastMoveTick >= windowTicks;
     }
 
+    /** 最近 windowTicks 内动过（任务单 13 挖矿用：人在走就不算卡）。 */
+    public boolean movedRecently(int tick) {
+        return started && tick - lastMoveTick < windowTicks;
+    }
+
     public void reset() {
         started = false;
     }

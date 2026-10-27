@@ -33,6 +33,17 @@ class GatherLogicTest {
         assertEquals(GatherLogic.MineProgress.Verdict.CONTINUE, q.feed(1, 700));
         assertEquals(GatherLogic.MineProgress.Verdict.STALLED, q.feed(1, 790));
         assertEquals(1, q.mined(), "卡住时也知道已经挖了几个");
+        GatherLogic.MineProgress m = new GatherLogic.MineProgress(0, 10, 400, 0);
+        assertEquals(GatherLogic.MineProgress.Verdict.CONTINUE, m.feed(0, true, 390), "人在走就不算卡");
+        assertEquals(GatherLogic.MineProgress.Verdict.CONTINUE, m.feed(0, false, 700));
+        assertEquals(GatherLogic.MineProgress.Verdict.STALLED, m.feed(0, false, 790), "停下 20 秒还没挖到才算卡");
+        StuckDetector sd = new StuckDetector(100, 0.1);
+        sd.feed(0, 64, 0, 0);
+        assertTrue(sd.movedRecently(50), "刚开始算动过");
+        sd.feed(0, 64, 0, 120);
+        assertFalse(sd.movedRecently(120), "100 tick 没动");
+        sd.feed(1, 64, 0, 121);
+        assertTrue(sd.movedRecently(121));
     }
 
     @Test
