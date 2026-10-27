@@ -68,6 +68,34 @@ public final class Shortcuts {
         return Optional.ofNullable(TABLE.get(normalize(text)));
     }
 
+    // ---------- 任务单 17：进度和地标 ----------
+
+    private static final java.util.Set<String> PROGRESS_QUESTIONS = java.util.Set.of(
+            "我们到哪了", "我们到哪儿了", "现在到哪了", "现在到哪儿了", "到哪了", "到哪儿了", "我们现在到哪了", "我们现在到哪儿了",
+            "进度", "进度呢", "什么进度", "现在什么进度", "我们什么进度", "我们现在什么进度", "走到哪了", "我们走到哪了",
+            "现在在哪个阶段", "我们在哪个阶段", "在哪个阶段");
+
+    /** "我们到哪了 / 现在到哪了 / 进度"：后台按通关地图直接回，不经过模型。 */
+    public static boolean isProgressQuestion(String text) {
+        return PROGRESS_QUESTIONS.contains(normalize(text));
+    }
+
+    private static final java.util.regex.Pattern REMEMBER_HERE = java.util.regex.Pattern.compile("^记住(这里|这儿|这)是(.+)$");
+    private static final java.util.regex.Pattern PROGRESS_CLAIM =
+            java.util.regex.Pattern.compile("^记住我们(已经|现在)?(到|在|做完)(.+?)(阶段)?了$");
+
+    /** "记住这里是村庄 / 矿洞 / 传送门"：返回主人说的那个词（"家"也会匹配，调用方先查 {@link #match}）。 */
+    public static Optional<String> rememberHere(String text) {
+        java.util.regex.Matcher m = REMEMBER_HERE.matcher(normalize(text));
+        return m.matches() ? Optional.of(m.group(2)) : Optional.empty();
+    }
+
+    /** "记住我们到铁器了 / 记住我们已经到下界了"：返回阶段的叫法，由调用方对照通关地图。 */
+    public static Optional<String> progressClaim(String text) {
+        java.util.regex.Matcher m = PROGRESS_CLAIM.matcher(normalize(text));
+        return m.matches() ? Optional.of(m.group(3)) : Optional.empty();
+    }
+
     /** 固定短语对应的参数：目前只有"记住这里是家"要带 name=home。 */
     public static com.google.gson.JsonObject argsFor(CommandName name) {
         com.google.gson.JsonObject o = new com.google.gson.JsonObject();

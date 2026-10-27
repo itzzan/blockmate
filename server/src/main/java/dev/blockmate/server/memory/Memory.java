@@ -106,12 +106,143 @@ public final class Memory implements AutoCloseable {
             CREATE TABLE IF NOT EXISTS places (
               name TEXT PRIMARY KEY, dim TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL,
               ts INTEGER NOT NULL)""",
+            // 任务单 17：做过的通关阶段（第一次 done_when 满足时写一行，以后不退回）
+            "CREATE TABLE IF NOT EXISTS progress (stage TEXT PRIMARY KEY, reached_ts INTEGER NOT NULL, notes TEXT)",
+            // 任务单 17：世界事实（地标和危险，带坐标）；家和床仍在 places
+            """
+            CREATE TABLE IF NOT EXISTS world_facts (
+              id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT, dim TEXT NOT NULL,
+              x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, ts INTEGER NOT NULL, source TEXT NOT NULL)""",
+            "CREATE INDEX IF NOT EXISTS world_facts_kind ON world_facts(kind)",
         };
         try (Statement st = conn.createStatement()) {
             for (String sql : ddl) {
                 st.execute(sql);
             }
         }
+    }
+
+    // ---------- progress / world_facts（任务单 17） ----------
+
+    /** 阶段第一次做完时记一行；已经有就不动。返回是否是新记的。 */
+    public boolean saveProgress(String stage, String notes) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO progress(stage, reached_ts, notes) VALUES (?, ?, ?) ON CONFLICT(stage) DO NOTHING")) {
+            ps.setString(1, stage);
+            ps.setLong(2, System.currentTimeMillis());
+            ps.setString(3, notes);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+    }
+
+    /** 记过的阶段 id，按做到的先后。 */
+    public Set<String> progressStages() {
+        Set<String> out = new java.util.LinkedHashSet<>();
+        try (PreparedStatement ps = conn.prepareStatement("SELECT stage FROM progress ORDER BY reached_ts");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(rs.getString(1));
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return out;
+    }
+
+    public StoredWorldFact saveWorldFact(String kind, String name, String dim, double x, double y, double z, String source) {
+        StoredWorldFact f = new StoredWorldFact(UUID.randomUUID().toString(), kind, name, dim, x, y, z,
+                System.currentTimeMillis(), source);
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO world_facts(id, kind, name, dim, x, y, z, ts, source) VALUES (?,?,?,?,?,?,?,?,?)")) {
+            ps.setString(1, f.id());
+            ps.setString(2, f.kind());
+            ps.setString(3, f.name());
+            ps.setString(4, f.dim());
+            ps.setDouble(5, f.x());
+            ps.setDouble(6, f.y());
+            ps.setDouble(7, f.z());
+            ps.setLong(8, f.ts());
+            ps.setString(9, f.source());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return f;
+    }
+
+    public List<StoredWorldFact> worldFacts() {
+        List<StoredWorldFact> out = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT id, kind, name, dim, x, y, z, ts, source FROM world_facts ORDER BY ts");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(new StoredWorldFact(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                        rs.getDouble(5), rs.getDouble(6), rs.getDouble(7), rs.getLong(8), rs.getString(9)));
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return out;
+    }
+
+    /** 同一维度里离 (x, z) 最近的某种事实，水平距离不超过 maxDist；没有就空。 */
+    public Optional<StoredWorldFact> nearestFact(String kind, String dim, double x, double z, double maxDist) {
+        StoredWorldFact best = null;
+        double bestD = maxDist;
+        for (StoredWorldFact f : worldFacts()) {
+            if (!f.kind().equals(kind) || !java.util.Objects.equals(f.dim(), dim)) {
+                continue;
+            }
+            double d = Math.hypot(f.x() - x, f.z() - z);
+            if (d <= bestD) {
+                bestD = d;
+                best = f;
+            }
+        }
+        return Optional.ofNullable(best);
+    }
+
+    /** 给通关地图用的事实 id 集合：world_facts 里出现过的 kind，加 settings 里 fact:xxx 的 xxx（去过下界这种没坐标的）。 */
+    public Set<String> factIds() {
+        Set<String> out = new java.util.LinkedHashSet<>();
+        try (PreparedStatement ps = conn.prepareStatement("SELECT DISTINCT kind FROM world_facts");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(rs.getString(1));
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        try (PreparedStatement ps = conn.prepareStatement("SELECT key FROM settings WHERE key LIKE 'fact:%'");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.add(rs.getString(1).substring("fact:".length()));
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return out;
+    }
+
+    /** 某个时刻之后结束的计划（"今天做过的事"）。 */
+    public List<StoredPlan> plansSince(long ts) {
+        List<StoredPlan> out = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id FROM plans "
+                        + "WHERE ended_ts>=? ORDER BY ended_ts")) {
+            ps.setLong(1, ts);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new StoredPlan(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                            rs.getLong(5), rs.getLong(6), rs.getString(7)));
+                }
+            }
+        } catch (SQLException e) {
+            throw wrap(e);
+        }
+        return out;
     }
 
     // ---------- places（任务单 13） ----------

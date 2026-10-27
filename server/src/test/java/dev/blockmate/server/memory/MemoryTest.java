@@ -139,4 +139,31 @@ class MemoryTest {
         assertEquals(13 * 3600_000L + 55 * 60_000L, MaintenanceScheduler.millisUntilNext(LocalTime.of(23, 55), now));
         assertEquals(17 * 3600_000L + 30 * 60_000L, MaintenanceScheduler.millisUntilNext(LocalTime.of(3, 30), now));
     }
+
+    @Test
+    void 任务单17_进度账本_世界事实_事实集合_今天的计划() {
+        assertTrue(memory.saveProgress("start", null), "第一次记");
+        assertFalse(memory.saveProgress("start", "again"), "记过就不动");
+        assertTrue(memory.saveProgress("stone", "owner_said"));
+        assertEquals(java.util.List.of("start", "stone"), new java.util.ArrayList<>(memory.progressStages()));
+
+        StoredWorldFact v = memory.saveWorldFact("village", null, "minecraft:overworld", 100, 64, 100, "seen");
+        memory.saveWorldFact("village", "大村", "minecraft:overworld", 400, 64, 400, "owner_said");
+        memory.saveWorldFact("fortress", null, "minecraft:the_nether", 10, 40, 10, "seen");
+        assertEquals(3, memory.worldFacts().size());
+        assertEquals(v.id(), memory.nearestFact("village", "minecraft:overworld", 110, 90, 32).orElseThrow().id());
+        assertTrue(memory.nearestFact("village", "minecraft:overworld", 200, 200, 32).isEmpty(), "32 格内没有");
+        assertEquals("大村", memory.nearestFact("village", "minecraft:overworld", 390, 390, Double.MAX_VALUE).orElseThrow().name());
+        assertTrue(memory.nearestFact("village", "minecraft:the_nether", 100, 100, 1000).isEmpty(), "维度不同不算");
+
+        memory.setSetting("fact:visited_nether", "1");
+        memory.setSetting("keeper_auto", "on");
+        assertEquals(java.util.Set.of("village", "fortress", "visited_nether"), memory.factIds(), "kind 加 fact: 开头的设置，别的设置不算");
+
+        long now = System.currentTimeMillis();
+        memory.savePlan(new StoredPlan("p1", "昨天的事", "[]", "done", now - 100_000_000L, now - 90_000_000L, null));
+        memory.savePlan(new StoredPlan("p2", "刚才的事", "[]", "failed", now - 5000, now - 1000, null));
+        assertEquals(java.util.List.of("p2"), memory.plansSince(now - 60_000).stream().map(StoredPlan::id).toList());
+        assertEquals(2, memory.plansSince(0).size());
+    }
 }

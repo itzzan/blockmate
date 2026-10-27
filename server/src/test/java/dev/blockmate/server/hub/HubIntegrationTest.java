@@ -241,6 +241,16 @@ class HubIntegrationTest {
                 drops:
                   minecraft:stone: minecraft:cobblestone
                 """);
+        // 任务单 17：一张三阶段的小通关地图
+        Files.writeString(dir.resolve("knowledge").resolve("progression.yaml"), """
+                item_groups:
+                  pick: {name: 镐, items: [wooden_pickaxe, stone_pickaxe]}
+                  food: {name: 吃的, items: [bread]}
+                stages:
+                  - {id: start, name: 开局, needs: [{group: pick}], actions: [craft wooden_pickaxe 1], say: 先做木镐。}
+                  - {id: stone, name: 石器, needs: [{item: stone_pickaxe}, {item: furnace}], actions: [craft furnace 1], say: 做熔炉。}
+                  - {id: food, name: 吃饱, needs: [{group: food, count: 8}], actions: [craft bread 3], say: 弄吃的。}
+                """);
         app = ServerApp.start(config(), 0, model);
     }
 
@@ -301,7 +311,7 @@ class HubIntegrationTest {
         String lastMsg = decision.messages().get(decision.messages().size() - 1).content();
         assertTrue(lastMsg.contains("你在主世界"), "状态句在最后一条 user 里：" + lastMsg);
         assertFalse(decision.messages().get(0).content().contains("你在主世界"), "system 里不再有状态句");
-        assertEquals(20, decision.tools().size(), "决策请求带全部工具");
+        assertEquals(21, decision.tools().size(), "决策请求带全部工具");
 
         // c. 跟我来：假执行器打印"收到 follow"，3 秒后结果到达，网页收到"来了"
         ui.send(MessageType.CHAT, new Chat("跟我来"));
@@ -397,6 +407,68 @@ class HubIntegrationTest {
         waitFor(() -> model.requests.size() == before + 1, 5000, "结束后说一句");
         ChatRequest say = model.requests.get(model.requests.size() - 1);
         assertTrue(say.tools() == null || say.tools().size() <= 1, "说一句的请求不带动作工具");
+    }
+
+    /** 任务单 17：进度问句直接回、记地标、记阶段、地标事件入表并去重。 */
+    @Test
+    void 任务单17_进度直接回_记地标_地标事件去重() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        WsClient mock = startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        int before = model.requests.size();
+
+        ui.send(MessageType.CHAT, new Chat("我们到哪了？"));
+        String a1 = ui.reply(5000);
+        assertTrue(a1.contains("现在在「"), a1);
+        assertEquals(before, model.requests.size(), "进度问句不经过模型");
+
+        ui.send(MessageType.CHAT, new Chat("记住这里是村庄"));
+        String a2 = ui.reply(5000);
+        assertEquals("记下了：这里是村庄。", a2);
+        ui.send(MessageType.CHAT, new Chat("记住这里是村庄"));
+        assertEquals("这儿我记过了，是村庄。", ui.reply(5000), "同一处不重复记");
+        assertEquals(1, app.memory().worldFacts().size());
+        assertEquals("owner_said", app.memory().worldFacts().get(0).source());
+
+        // 模组看见了 300 格外的另一个村庄：入表、网页提示一句；同一事件再来一次不重复
+        mock.send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.landmark("village", new dev.blockmate.protocol.Pos(300, 64, 300), "minecraft:overworld")));
+        String n1 = noticeContaining(ui, "它看见了村庄", 5000);
+        assertTrue(n1 != null && n1.contains("格）"), "提示带方向和距离：" + n1);
+        waitFor(() -> app.memory().worldFacts().size() == 2, 3000, "第二条事实入表");
+        mock.send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.landmark("village", new dev.blockmate.protocol.Pos(310, 64, 290), "minecraft:overworld")));
+        Thread.sleep(800);
+        assertEquals(2, app.memory().worldFacts().size(), "32 格内同种不重复");
+        assertTrue(app.memory().factIds().contains("village"));
+
+        ui.send(MessageType.CHAT, new Chat("记住我们到石器了"));
+        String a3 = ui.reply(5000);
+        assertTrue(a3.startsWith("记下了，我们到「石器」了。"), a3);
+        assertTrue(a3.contains("「吃饱」"), "前面两阶段记上后当前是吃饱：" + a3);
+        assertTrue(app.memory().progressStages().containsAll(List.of("start", "stone")));
+        ui.send(MessageType.CHAT, new Chat("记住我们到月球了"));
+        assertTrue(ui.reply(5000).contains("没听懂是哪个阶段"));
+        ui.send(MessageType.CHAT, new Chat("进度"));
+        assertTrue(ui.reply(5000).contains("「吃饱」"), "账本不退回");
+        assertEquals(before, model.requests.size(), "这些都不经过模型");
+    }
+
+    private static String noticeContaining(UiClient ui, String text, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            Envelope e = ui.next(MessageType.NOTICE, Math.max(1, deadline - System.currentTimeMillis()));
+            if (e == null) {
+                return null;
+            }
+            String t = ProtocolCodec.bodyAs(e, dev.blockmate.protocol.Notice.class).text();
+            if (t != null && t.contains(text)) {
+                return t;
+            }
+        }
+        return null;
     }
 
     private static PlanRun.Step step(int i, CommandName name, Object args) {

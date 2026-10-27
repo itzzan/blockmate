@@ -171,6 +171,8 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | inventory_change | item, delta, count | 某物品数量变化；捡到为正，丢出为负 |
 | auto_eat | item, count | 任务单 15：没人叫、自己吃了一口；count 放吃完后的饥饿值 |
 | bed_collected | pos, dim | 任务单 15：睡醒后把自己放的床收回来了 |
+| landmark | what, pos, dim | 任务单 17：看见了地标。what ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal，pos 是地标的位置（不是自己的）。模组每 tick 扫一列（x 固定，z ±24、y ±8），49 tick 一遍、歇 50 tick，约每 5 秒一遍；村庄 = 钟或 24 格内 ≥ 2 个村民，传送门按维度分，下界砖 ≥ 20 块且在下界 = 下界要塞，苔石砖 + 石砖楼梯同时有且在主世界 = 要塞，末地传送门框 = 末地传送门；同种 100 格内只报一次（模组侧，重连清零） |
+| danger | what, pos, dim | 任务单 17：看见了危险，第一版只有 what=lava（8 格内岩浆 ≥ 20 块），32 格内只报一次 |
 
 【补丁 2026-10-22】模组侧两条行为：
 - 死亡画面停留 3 秒后模组自动"重生"（和按钮做的事一样），所以 death 之后会跟着 respawn + snapshot + joined；挂机被怪杀死不会一直停在死亡画面。画面一直不消失就每 3 秒再按一次。
@@ -331,13 +333,21 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
 - system 顺序变为：persona.md 全文 → 动作规则 + 说话规则 + **计划规则**（PromptBuilder.ACTION_RULE）→ `knowledge/plan_examples.md` 全文（Knowledge 类按修改时间热重载，目录由 config `knowledge_dir` 指定，默认 config.yaml 旁的 knowledge/；文件不存在只警告一次）→ 已确认偏好 → 最近日记 → 最近任务。plan_examples 一次对话里不变，所以放在前面不打断前缀缓存。
 - 计划规则原文："主人要的事一个动作做不完时用 make_plan 给出几步（最多 8 步），同时用一句话说你打算怎么做，不要念步骤清单；一个动作就能做完的事直接用那个工具，不要 make_plan。计划开始后每做完一步不用说话，全部做完再说一句。"
 - 新增单步工具（和 §7.1 的命令一一对应，参数同名）：goto(x,y,z 或 place)、mine(block, count, radius 可选)、collect(radius、item 可选)、craft(item, count 可选)、place(block)、pickup_block(block 可选)、eat(item 可选)、sleep、go_home、remember_place(name)、use_furnace(input, fuel 可选, count 可选)。描述里写"可不填"的参数不进 required。
-- `make_plan(goal, steps[])`：steps 每项 `{command, args, why}`，command 的 JSON schema 带 enum = 可入计划的 16 个命令（没有 stop / cancel / report_status / rejoin）。决策请求现在带 20 个工具（7 + 11 + make_plan + remember_preference）。
+- `make_plan(goal, steps[])`：steps 每项 `{command, args, why}`，command 的 JSON schema 带 enum = 可入计划的 16 个命令（没有 stop / cancel / report_status / rejoin）。决策请求现在带 21 个工具（7 + 11 + make_plan + remember_preference + 任务单 17 的 report_progress）。
 - 校验（PlanValidator，hub 侧）：steps 非空且 ≤ 8；每步命令在 enum 里；参数按命令查——mine 要 block + count>0 且 block 在 blocks.yaml 的 mineable 里（任务单 12 起，不在就"xx 不在允许挖的清单里"），deliver 要 item + count>0，pick_up / craft 要 item，use_furnace 要 input，remember_place 要 name，place 的 block 必须在 blocks.yaml 的 placeable 里（工作台 / 火把 / 床），goto 要 x/y/z 或 place；item / block / input / fuel 没写命名空间自动补 `minecraft:`。整条有任何一处不合法就拒掉：第一次拒掉时把毛病拼在主人原话后面再问一次模型（"[系统] 你上次给的计划有问题：…。只能用工具列表里的命令和参数，最多 8 步。请重新给一个计划；一个动作就能做完就直接调那个工具。"），两次的文字合成一条伙伴消息；第二次还不合法就对主人说"这件事我没想清楚怎么做（前两条毛病），换个说法再跟我说一遍？"，不开始计划。合法的 make_plan 和单个动作工具一样占"一次只做一件"的名额。
 - 一步失败后的四选一：hub 用只带 `plan_decision(action, say, new_steps)` 工具的请求问模型，user 内容是"[系统] 你在做「目标」这件事，一共 N 步，第 k 步「动作名」没做成：原因。已做完：…。剩余重试额度 r 次。请调用 plan_decision …"。hub 先把 `say` 存成 companion 消息并发到网页（日志 `chat_out … plan_decision=true`），再执行：retry → 同一步重发（整个计划最多 2 次，额度用完算放弃并补一句"重试的次数用完了"）；skip → 当前步 skipped，派下一个 pending 步，没有了按 failed 结束；replan → `new_steps` 走同一套校验（index 接着编），通过就替换掉失败步之后的所有剩余步再派，不通过算放弃并补一句"新步骤我没列对"；abort → failed 结束，say 为空时退回原来的"结果到了说一句"。模型没调工具时按文字里有没有"重试 / 跳过"兜底，否则放弃。
 - 说话：make_plan 那一轮模型的文字就是"打算"，直接当回复；每步 ok 不说；最后一步 ok 时的"说一句"提示改成"主人要的「目标」你全部做完了，最后一步「…」：…"。
 - 【任务单 13】system 里"最近任务"之后加一行「记过的地点（说"回家"或"去 xx"就能去）：home（x, y, z）、…」；一个都没记过时写「还没记过任何地点：主人说"记住这里是家"你就记下 home；没记过家时主人让你回家，要先问家在哪」。
 - 日志：`plan_accepted steps= attempt=`、`plan_rejected attempt= errors=`（errors 是校验短语，不含原话）、`plan_decision plan_id= index= action= say_len=`、`plan_replan plan_id= from_index= new_steps=`、`plan_replan_rejected`、`knowledge loaded file= len=`。
 - 【任务单 16】通关地图（2026-10-27，guide-3 §1.1）：`knowledge/progression.yaml` 三段——`item_groups`（等价物品组，每组 name 中文 + items；"石镐或更好的镐"这类）、`fact_names`（世界事实 id → 中文）、`stages`（有序 9 个：start / stone / food / iron / diamond / nether_prep / nether / end_prep / end，每个 id / name / needs / facts / actions / risks / say；needs 一条是 item 或 group 加 count，组按组内物品数量加总）。`Knowledge.progression()` 和 blocks.yaml 一样按修改时间热重载，文件缺失或坏了（没 id、id 重复、needs 引用不存在的组）按空地图处理并记一条 warn，坏文件改动前不重读。`Progression.assess(背包, 事实, 记过的阶段)` 是纯逻辑：needs 全满足（只算背包里的，箱子不算）且 facts 全有的阶段算做完；后面的做完了前面的也算做完（有铁镐就不会是"开局"）；progress 表记过的（任务单 17）不退回；第一个没做完的是当前阶段，它没满足的 needs / facts 就是缺什么。`describe()` 给一句算出来的话：「现在在「铁器」阶段（9 个阶段里的第 4 个），缺：镐（铁镐或更好）0/1、盾牌 0/1。还没有铁，先找个洞口挖煤和铁……」，不经过模型。这一张还没接进提示词、固定短语和 progress 表，任务单 17 做；actions 只是计划草稿，真要派还得过 PlanValidator（diamond_ore、obsidian 等现在不在 blocks.yaml 的 mineable 里，到任务单 18 让提议变计划时再决定加不加）。
+- 【任务单 17】进度和世界事实（2026-10-27，guide-3 §1.2）：
+  - 事实来源三条：主人说的（固定短语 `记住这里是 xx`，xx 由 `Landmarks.kindOf` 按当前维度认成 village / mine_site / portal_* / fortress / stronghold / end_portal / danger，source=owner_said，直接回"记下了：这里是村庄。"；认不出的 xx 当普通地点名走 remember_place 进 places）；它自己看见的（landmark / danger 事件，source=seen，网页提示"它看见了村庄（西北 40 格）"）；任务结果（mine 成功时按最新快照的位置记 mine_site，source=task_result，不提示）。同一 kind 在同一维度 32 格内已有记录就不重复（日志 `landmark kind= source= new=`）。
+  - 没有坐标的事实（去过下界 / 末地）：hub 看快照的 dim 变化，第一次到下界写 settings `fact:visited_nether`、末地 `fact:visited_end`（日志 `fact_recorded id= source=dim_change`，网页提示一句）。`Memory.factIds()` = world_facts 里出现过的 kind ∪ settings 里 fact:* 的后半段，就是给 Progression.assess 的事实集合。dragon_killed 要到任务单 23 才有来源。
+  - 进度账本：快照里背包一变（或新事实）就 `Progression.assess` 一遍，`done()` 里没记过的阶段写进 progress 表（`progress_reached stage=`，网页提示"「石器」这一阶段做完了"），以后不退回。主人自己手里的东西它看不见，所以有固定短语 `记住我们到铁器了 / 记住我们已经到下界了 / 记住我们在石器阶段了`：按 id 或中文名找到阶段，把它和前面的都记成做过（notes=owner_said，日志 `progress_claimed stage= added=`），回"记下了，我们到「铁器」了。"加那句进度；认不出阶段名就列出九个名字。
+  - "我们到哪了 / 现在到哪了 / 到哪了 / 进度 / 什么进度 / 在哪个阶段"（Shortcuts.isProgressQuestion）：hub 直接回 `Progression.describe` 那句（`chat_in … shortcut=progress`、`chat_out … direct=true`），不经过模型；伙伴不在线时前面加"（它现在不在游戏里，背包按空的算，做过的阶段还在账上）"。别的问法交给模型，模型多一个无参工具 `report_progress`：hub 把同一句接在模型的引子后面（和"一次只做一件"的提示一样走 notes），模型自己说的阶段不算数。
+  - 提示词三段：system 在 plan_examples 之后加「通关进度（后台算出来的事实…）：…」一行（变得少，不打断前缀缓存）；状态句末尾加「附近记得的地标：村庄（西北 60 格）、矿点（东 12 格）。」（最近 10 条，同维度按距离、别的维度排后面只写维度，不带原始坐标；`Landmarks.describe` / `nearest`）；"最近做过的任务"改成最近 5 个加今天结束的全部，当天的标"今天"。
+  - "去村庄 / 去矿洞"：goto place 在 places 里查不到时按 `Landmarks.kindOf` 查最近的同种事实换成坐标（日志 `place_from_fact name= kind= fact_id=`），任务单 21 的带路也走这条。
+
 
 ## 10. Gateway：和 Ollama 怎么说话
 
@@ -403,6 +413,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
 - 最近的任务（任务单 10）：表 `plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id)`，计划结束时写一行；给模型的 system 里带最近 5 个的"日期 目标：结局"。
+- 进度和世界事实（任务单 17）：表 `progress(stage PRIMARY KEY, reached_ts, notes)`，一个阶段第一次做完写一行，不退回，notes=owner_said 是主人口头记的；表 `world_facts(id PRIMARY KEY, kind, name, dim, x, y, z, ts, source)`，kind ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal / mine_site / danger，source ∈ owner_said / seen / task_result，name 是主人叫它的名字；没坐标的事实放 settings（`fact:visited_nether` / `fact:visited_end`，值是时间戳）。家和床仍在 places。
 - 地点（任务单 13）：表 `places(name PRIMARY KEY, dim, x, y, z, ts)`，remember_place 写入（同名覆盖），goto place / go_home 查它；全部地点进 system 提示。hub 日志 `place_remembered name= dim=`、`place_resolved name= for=`、`place_unknown name= known=`。任务单 15：sleep 成功时 hub 把 detail.bed_pos 记成 bed，没记过 home 就同时记成 home（日志 `place_remembered name=bed … home_set=`）。
 - 最近 N 条对话：按 ts 倒序取最近 2N 条未删除的 messages，再经 HistoryWindow 做分块滑动：窗口在 N 到 2N 条之间，满 2N 条时一次砍回 N 条，而不是每轮掉一条，这样提示前缀只在每 N 条消息变一次（N 来自 config.history_n，默认 20）。网页 hello 回复里带的 history 仍是最近 N 条。
 

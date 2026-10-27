@@ -123,21 +123,21 @@ class BrainUnitTest {
     @Test
     void 工具定义() {
         JsonArray all = Tools.all();
-        assertEquals(20, all.size());
+        assertEquals(21, all.size());
         List<String> names = all.asList().stream()
                 .map(e -> ((JsonObject) e).getAsJsonObject("function").get("name").getAsString()).toList();
         assertEquals(List.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver", "report_status",
-                "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place",
+                "report_progress", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place",
                 "use_furnace", "make_plan", "remember_preference"), names);
         JsonObject deliver = all.get(5).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         assertTrue(deliver.getAsJsonObject("properties").has("count"));
-        JsonObject mine = all.get(8).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        JsonObject mine = all.get(9).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         assertEquals(List.of("block", "count"), mine.getAsJsonArray("required").asList().stream().map(e -> e.getAsString()).sorted().toList(),
                 "mine 的 block/count 必填，radius 可不填");
-        JsonObject craft = all.get(10).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        JsonObject craft = all.get(11).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         assertEquals(List.of("item"), craft.getAsJsonArray("required").asList().stream().map(e -> e.getAsString()).toList(),
                 "craft 的 count 可不填");
-        JsonObject makePlan = all.get(18).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        JsonObject makePlan = all.get(19).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         JsonObject stepItem = makePlan.getAsJsonObject("properties").getAsJsonObject("steps").getAsJsonObject("items");
         assertTrue(stepItem.getAsJsonObject("properties").getAsJsonObject("command").getAsJsonArray("enum").asList().stream()
                 .map(e -> e.getAsString()).toList().containsAll(List.of("mine", "deliver", "go_home")));
@@ -170,5 +170,25 @@ class BrainUnitTest {
         assertTrue(Brain.describeResult(CommandName.USE_FURNACE, Result.failed("c", Reason.NO_MATERIALS, new Result.UseFurnaceDetail(3))).endsWith("，之前已经烧好 3 个"));
         assertEquals("成功，记住这个地点了", Brain.describeResult(CommandName.REMEMBER_PLACE,
                 Result.ok("c", new Result.RememberPlaceDetail("home", new dev.blockmate.protocol.Pos(1, 2, 3)))));
+    }
+
+    @Test
+    void 任务单17_进度在system里_地标在状态句里() {
+        BrainContext ctx = new BrainContext(full(), true, List.of(), List.of(), List.of(), List.of(), List.of(),
+                "现在在「石器」阶段（9 个阶段里的第 2 个），缺：熔炉 0/1。做个熔炉。", List.of("村庄（西北 60 格）", "矿点（东 12 格）"));
+        List<ChatMessage> msgs = PromptBuilder.build("我是人设", ctx, NAMES, "村庄在哪");
+        String sys = msgs.get(0).content();
+        assertTrue(sys.contains("通关进度（后台算出来的事实"), sys);
+        assertTrue(sys.contains("现在在「石器」阶段"), sys);
+        assertFalse(sys.contains("村庄（西北 60 格）"), "地标随位置变，不进 system：" + sys);
+        String last = msgs.get(msgs.size() - 1).content();
+        assertTrue(last.contains("附近记得的地标：村庄（西北 60 格）、矿点（东 12 格）。"), last);
+        assertTrue(last.endsWith("\n\n主人说：村庄在哪"), last);
+        BrainContext plain = new BrainContext(full(), true, List.of(), List.of(), List.of());
+        String sys2 = PromptBuilder.build("我是人设", plain, NAMES, "你好").get(0).content();
+        assertFalse(sys2.contains("通关进度"), "没有进度那句就不加这一段");
+        assertFalse(PromptBuilder.stateLine(plain, NAMES).contains("地标"));
+        assertEquals("今天", PromptBuilder.dayLabel(System.currentTimeMillis()));
+        assertFalse(PromptBuilder.dayLabel(System.currentTimeMillis() - 3L * 24 * 3600 * 1000).equals("今天"));
     }
 }

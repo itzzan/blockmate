@@ -14,5 +14,9 @@ public enum EventKind {
     /** 任务单 15：没人叫、自己吃了一口（item = 吃了什么，count = 吃完的饥饿值）。 */
     @SerializedName("auto_eat") AUTO_EAT,
     /** 任务单 15：睡醒后把自己放的床收回来了（pos = 床原来的位置）。 */
-    @SerializedName("bed_collected") BED_COLLECTED
+    @SerializedName("bed_collected") BED_COLLECTED,
+    /** 任务单 17：看见地标（what = village / portal_overworld / portal_nether / fortress / stronghold / end_portal，pos / dim 是地标位置）。 */
+    @SerializedName("landmark") LANDMARK,
+    /** 任务单 17：看见危险（what = lava，pos / dim 是岩浆位置），带路和空闲提议用。 */
+    @SerializedName("danger") DANGER
 }

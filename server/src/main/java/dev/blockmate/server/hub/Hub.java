@@ -29,6 +29,9 @@ import dev.blockmate.protocol.Snapshot;
 import dev.blockmate.protocol.Status;
 import dev.blockmate.protocol.TaskInfo;
 import dev.blockmate.server.Config;
+import dev.blockmate.server.brain.Landmarks;
+import dev.blockmate.server.brain.Progression;
+import dev.blockmate.server.memory.StoredWorldFact;
 import dev.blockmate.server.brain.Brain;
 import dev.blockmate.server.brain.BrainContext;
 import dev.blockmate.server.brain.ItemNames;
@@ -117,6 +120,13 @@ public final class Hub {
 
     private final Knowledge knowledge;
 
+    /** 任务单 17：progress 表里记过的阶段（启动后第一次用时读一次，之后只增）。 */
+    private java.util.Set<String> progressDone;
+    /** 上一次算过进度时的背包；背包没变就不重算。 */
+    private Map<String, Integer> lastInventoryForProgress;
+    /** 同种世界事实在这个距离内已有记录就不重复记。 */
+    static final double FACT_DEDUPE_RADIUS = 32;
+
     public Hub(Config cfg, Memory memory, Brain brain, ItemNames names, ScheduledExecutorService exec,
                ExecutorService brainExec) {
         this(cfg, memory, brain, Knowledge.empty(), names, exec, brainExec);
@@ -193,15 +203,152 @@ public final class Hub {
     }
 
     private void onSnapshot(Snapshot s) {
-        boolean changed = lastSnapshot == null
-                || lastSnapshot.inWorld() != s.inWorld()
-                || !Objects.equals(lastSnapshot.dim(), s.dim())
-                || !Objects.equals(roundHealth(lastSnapshot), roundHealth(s))
-                || (lastSnapshot.task() == null) != (s.task() == null);
+        Snapshot prev = lastSnapshot;
+        boolean changed = prev == null
+                || prev.inWorld() != s.inWorld()
+                || !Objects.equals(prev.dim(), s.dim())
+                || !Objects.equals(roundHealth(prev), roundHealth(s))
+                || (prev.task() == null) != (s.task() == null);
         lastSnapshot = s;
         if (changed) {
             pushStatus(true);
         }
+        if (s.inWorld()) {
+            // 任务单 17：换了维度记事实（去过下界 / 末地）；背包变了重算一遍阶段
+            if (s.dim() != null && (prev == null || !s.dim().equals(prev.dim()))) {
+                noteDimension(s.dim());
+            }
+            if (!Objects.equals(lastInventoryForProgress, s.inventory())) {
+                lastInventoryForProgress = s.inventory();
+                checkProgress();
+            }
+        }
+    }
+
+    /** 任务单 17：第一次到下界 / 末地时记一条没有坐标的事实（settings 里 fact:visited_nether）。 */
+    private void noteDimension(String dim) {
+        String fact = Landmarks.DIM_NETHER.equals(dim) ? "visited_nether" : Landmarks.DIM_END.equals(dim) ? "visited_end" : null;
+        if (fact == null || memory.setting("fact:" + fact).isPresent()) {
+            return;
+        }
+        memory.setSetting("fact:" + fact, String.valueOf(now()));
+        log.info("fact_recorded id={} source=dim_change", fact);
+        notice(Landmarks.DIM_END.equals(dim) ? "第一次到末地，记下了" : "第一次到下界，记下了", "info");
+        checkProgress();
+    }
+
+    /** 任务单 17：世界事实入表。同种在 32 格内已有记录就不重复；自己看见的新地标在网页提示一句。返回是否新记。 */
+    private boolean recordFact(String kind, String name, Pos pos, String dim, String source) {
+        String d = dim != null ? dim : lastSnapshot != null && lastSnapshot.dim() != null ? lastSnapshot.dim() : "minecraft:overworld";
+        Optional<StoredWorldFact> near = memory.nearestFact(kind, d, pos.x(), pos.z(), FACT_DEDUPE_RADIUS);
+        if (near.isPresent()) {
+            log.info("landmark kind={} source={} new=false near_id={}", kind, source, near.get().id());
+            return false;
+        }
+        StoredWorldFact f = memory.saveWorldFact(kind, name, d, pos.x(), pos.y(), pos.z(), source);
+        log.info("landmark kind={} source={} new=true dim={} id={}", kind, source, d, f.id());
+        if ("seen".equals(source)) {
+            Pos from = lastSnapshot != null ? lastSnapshot.pos() : null;
+            notice("它看见了" + Landmarks.describe(f, from, lastSnapshot != null && lastSnapshot.dim() != null ? lastSnapshot.dim() : d), "info");
+        }
+        checkProgress();
+        return true;
+    }
+
+    private java.util.Set<String> progressDone() {
+        if (progressDone == null) {
+            progressDone = new java.util.HashSet<>(memory.progressStages());
+        }
+        return progressDone;
+    }
+
+    private Progression.Assessment assessProgress() {
+        Map<String, Integer> inv = lastSnapshot != null && lastSnapshot.inWorld() && lastSnapshot.inventory() != null
+                ? lastSnapshot.inventory() : Map.of();
+        return knowledge.progression().assess(inv, memory.factIds(), progressDone());
+    }
+
+    /** 任务单 17：算一遍阶段，新做完的记进 progress 表并在网页提示；记过的不退回。 */
+    private void checkProgress() {
+        Progression p = knowledge.progression();
+        if (p.isEmpty()) {
+            return;
+        }
+        for (Progression.Stage st : assessProgress().done()) {
+            if (progressDone().add(st.id())) {
+                memory.saveProgress(st.id(), null);
+                log.info("progress_reached stage={}", st.id());
+                notice("「" + st.name() + "」这一阶段做完了", "info");
+            }
+        }
+    }
+
+    /** "我们到哪了"的那句话：按通关地图算出来的，不经过模型。 */
+    String progressText() {
+        Progression p = knowledge.progression();
+        String text = p.describe(assessProgress(), names);
+        boolean inWorld = lastSnapshot != null && lastSnapshot.inWorld() && companionInWorld();
+        return inWorld || p.isEmpty() ? text : "（它现在不在游戏里，背包按空的算，做过的阶段还在账上）" + text;
+    }
+
+    /** "记住我们到铁器了"：把那一阶段和它前面的都记成做过（主人自己手里的东西它看不见，所以给他一个口子）。 */
+    private String claimProgress(String word) {
+        Progression p = knowledge.progression();
+        if (p.isEmpty()) {
+            return "我还没有通关地图，记不了阶段。";
+        }
+        String w = word == null ? "" : word.strip().toLowerCase();
+        Progression.Stage target = null;
+        for (Progression.Stage st : p.stages()) {
+            if (st.id().equals(w) || st.name().equals(w)) {
+                target = st;
+                break;
+            }
+        }
+        if (target == null) {
+            return "没听懂是哪个阶段。阶段有：" + p.stages().stream().map(Progression.Stage::name)
+                    .collect(java.util.stream.Collectors.joining("、")) + "。";
+        }
+        int added = 0;
+        for (Progression.Stage st : p.stages()) {
+            if (progressDone().add(st.id())) {
+                memory.saveProgress(st.id(), "owner_said");
+                added++;
+            }
+            if (st == target) {
+                break;
+            }
+        }
+        log.info("progress_claimed stage={} added={}", target.id(), added);
+        return "记下了，我们到「" + target.name() + "」了。" + progressText();
+    }
+
+    /** "记住这里是村庄"：按最新快照的位置记一条世界事实。 */
+    private String rememberLandmark(String kind, String word) {
+        if (lastSnapshot == null || lastSnapshot.pos() == null || !lastSnapshot.inWorld()) {
+            return "我现在不在游戏里，不知道\"这里\"是哪，等我进去了再说一遍。";
+        }
+        boolean fresh = recordFact(kind, word, lastSnapshot.pos(), lastSnapshot.dim(), "owner_said");
+        return (fresh ? "记下了：这里是" : "这儿我记过了，是") + Landmarks.kindName(kind) + "。";
+    }
+
+    /** 任务单 17：挖成功的位置记成矿点（32 格内不重复，不提示）。 */
+    private void rememberMineSite(Result r) {
+        if (r.status() != dev.blockmate.protocol.ResultStatus.OK || commandNames.get(r.commandId()) != CommandName.MINE
+                || lastSnapshot == null || lastSnapshot.pos() == null) {
+            return;
+        }
+        recordFact(Landmarks.MINE_SITE, null, lastSnapshot.pos(), lastSnapshot.dim(), "task_result");
+    }
+
+    /** 不经过模型、直接回主人一句（任务单 17：进度、记地标）。 */
+    private void directReply(String inReplyTo, StoredMessage src, String text) {
+        String replyId = UUID.randomUUID().toString();
+        replyChunk(replyId, inReplyTo, text);
+        StoredMessage saved = memory.saveMessage("companion", text, src.id(), null);
+        replyDone(replyId, inReplyTo, saved.id());
+        log.info("chat_out len={} direct=true msg_id={}", text.length(), saved.id());
+        pushStatus(true);
     }
 
     private static Long roundHealth(Snapshot s) {
@@ -236,6 +383,18 @@ public final class Hub {
             case BED_COLLECTED -> {
                 memory.saveEvent("bed_collected", null, null, ProtocolCodec.toBody(ev));
                 log.info("event bed_collected");
+            }
+            case LANDMARK -> {
+                memory.saveEvent("landmark", null, null, ProtocolCodec.toBody(ev));
+                if (ev.what() != null && ev.pos() != null) {
+                    recordFact(ev.what(), null, ev.pos(), ev.dim(), "seen");
+                }
+            }
+            case DANGER -> {
+                memory.saveEvent("danger", null, null, ProtocolCodec.toBody(ev));
+                if (ev.pos() != null) {
+                    recordFact(Landmarks.DANGER, null, ev.pos(), ev.dim(), "seen");
+                }
             }
             default -> memory.saveEvent(ev.kind().name().toLowerCase(), null, null, ProtocolCodec.toBody(ev));
         }
@@ -292,6 +451,7 @@ public final class Hub {
         memory.saveEvent("result", r.commandId(), commandSource.get(r.commandId()), ProtocolCodec.toBody(r));
         log.info("result cmd_id={} status={} reason={} outcome={}", r.commandId(), r.status(), r.reason(), outcome);
         rememberBedIfSlept(r);
+        rememberMineSite(r);
         String stopSource = stopCommands.remove(r.commandId());
         if (stopSource != null) {
             if ("button".equals(stopSource)) {
@@ -376,6 +536,18 @@ public final class Hub {
                     : normalizePlaceName(args.has("place") && !args.get("place").isJsonNull() ? args.get("place").getAsString() : "");
             Optional<StoredPlace> p = memory.place(placeName);
             String hereDim = lastSnapshot != null ? lastSnapshot.dim() : null;
+            if (p.isEmpty() && lastSnapshot != null && lastSnapshot.pos() != null) {
+                // 任务单 17：地点表里没有就查地标，"去村庄"= 最近的村庄
+                String kind = Landmarks.kindOf(placeName, hereDim);
+                if (kind != null) {
+                    Optional<StoredWorldFact> f = memory.nearestFact(kind, hereDim != null ? hereDim : "minecraft:overworld",
+                            lastSnapshot.pos().x(), lastSnapshot.pos().z(), Double.MAX_VALUE);
+                    if (f.isPresent()) {
+                        p = Optional.of(new StoredPlace(placeName, f.get().dim(), f.get().x(), f.get().y(), f.get().z(), f.get().ts()));
+                        log.info("place_from_fact name={} kind={} fact_id={}", placeName, kind, f.get().id());
+                    }
+                }
+            }
             if (p.isEmpty() || (hereDim != null && p.get().dim() != null && !hereDim.equals(p.get().dim()))) {
                 log.info("place_unknown name={} known={} same_dim={}", placeName, p.isPresent(), p.isPresent() && hereDim == null);
                 synthStep(step, id -> Result.failed(id, Reason.NO_PLACE_KNOWN));
@@ -692,7 +864,37 @@ public final class Hub {
         String text = chat.text().strip();
         StoredMessage msg = memory.saveMessage("owner", text, null, null);
         String replyId = UUID.randomUUID().toString();
+        // 任务单 17：进度问句、"记住我们到 xx 了"、"记住这里是 xx"都不经过模型
+        if (Shortcuts.isProgressQuestion(text)) {
+            log.info("chat_in len={} msg_id={} shortcut=progress", text.length(), msg.id());
+            directReply(env.id(), msg, progressText());
+            return;
+        }
+        Optional<String> claim = Shortcuts.progressClaim(text);
+        if (claim.isPresent()) {
+            log.info("chat_in len={} msg_id={} shortcut=progress_claim", text.length(), msg.id());
+            directReply(env.id(), msg, claimProgress(claim.get()));
+            return;
+        }
         Optional<CommandName> shortcut = Shortcuts.match(text);
+        if (shortcut.isEmpty()) {
+            Optional<String> here = Shortcuts.rememberHere(text);
+            if (here.isPresent()) {
+                String kind = Landmarks.kindOf(here.get(), lastSnapshot != null ? lastSnapshot.dim() : null);
+                if (kind != null) {
+                    log.info("chat_in len={} msg_id={} shortcut=remember_landmark kind={}", text.length(), msg.id(), kind);
+                    directReply(env.id(), msg, rememberLandmark(kind, here.get()));
+                    return;
+                }
+                // 认不出是哪种地标：当普通地点名记进 places，和"记住这里是家"一条路
+                log.info("chat_in len={} msg_id={} shortcut=remember_place", text.length(), msg.id());
+                JsonObject placeArgs = new JsonObject();
+                placeArgs.addProperty("name", normalizePlaceName(here.get()));
+                ToolCall placeCall = new ToolCall("shortcut-" + replyId.substring(0, 8), CommandName.REMEMBER_PLACE.wire(), placeArgs);
+                onDecision(replyId, env.id(), msg, new ModelReply("", List.of(placeCall), 0, 0, 0), 0, "");
+                return;
+            }
+        }
         if (shortcut.isPresent()) {
             // 固定短语：不经过模型，直接当作模型调了这个工具（动作结束后照旧让它说一句）
             log.info("chat_in len={} msg_id={} shortcut={}", text.length(), msg.id(), shortcut.get().wire());
@@ -759,6 +961,10 @@ public final class Hub {
                     log.info("preference_pending len={}", t.length());
                     pushPreferences(null);
                 }
+            } else if (Tools.REPORT_PROGRESS.equals(tc.name())) {
+                // 任务单 17：算出来的那句接在模型的引子后面
+                notes.add(progressText());
+                log.info("report_progress");
             } else if (Tools.isAction(tc.name())) {
                 if (actionIssued) {
                     notes.add("一次只做一件，先做第一个。");
@@ -1145,8 +1351,29 @@ public final class Hub {
 
     private BrainContext context() {
         List<String> prefs = memory.preferences("active").stream().map(Preference::text).toList();
+        Progression prog = knowledge.progression();
+        String progressLine = prog.isEmpty() ? "" : prog.describe(assessProgress(), names);
+        Pos here = lastSnapshot != null && lastSnapshot.inWorld() ? lastSnapshot.pos() : null;
+        String dim = lastSnapshot != null ? lastSnapshot.dim() : null;
+        List<String> landmarks = Landmarks.nearest(memory.worldFacts(), here, dim, 10);
         return new BrainContext(lastSnapshot, mcOnline, prefs, memory.recentEpisodes(3),
-                historyWindow.select(memory.recentMessages(cfg.historyN * 2)), memory.recentPlans(5), memory.places());
+                historyWindow.select(memory.recentMessages(cfg.historyN * 2)), plansForPrompt(), memory.places(),
+                progressLine, landmarks);
+    }
+
+    /** 任务单 17："今天做过的事"：最近 5 个计划加上今天结束的全部，去重按结束时间排。 */
+    private List<dev.blockmate.server.memory.StoredPlan> plansForPrompt() {
+        long startOfDay = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        java.util.LinkedHashMap<String, dev.blockmate.server.memory.StoredPlan> m = new java.util.LinkedHashMap<>();
+        for (dev.blockmate.server.memory.StoredPlan sp : memory.recentPlans(5)) {
+            m.put(sp.id(), sp);
+        }
+        for (dev.blockmate.server.memory.StoredPlan sp : memory.plansSince(startOfDay)) {
+            m.putIfAbsent(sp.id(), sp);
+        }
+        List<dev.blockmate.server.memory.StoredPlan> out = new ArrayList<>(m.values());
+        out.sort(java.util.Comparator.comparingLong(dev.blockmate.server.memory.StoredPlan::endedTs));
+        return out;
     }
 
     // ---------------- 日记与备份 ----------------

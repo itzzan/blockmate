@@ -45,6 +45,8 @@ public final class Observer {
     private boolean wasDead;
     private Map<String, Integer> lastInventory = Inventories.empty();
     private String lastKickReason;
+    /** 任务单 17：地标扫描，每 tick 扫一小片。 */
+    private final LandmarkScanner landmarks = new LandmarkScanner();
 
     public Observer(Supplier<HubLink> link, Supplier<TaskInfo> taskSupplier, Consumer<String> onDisconnectScreen) {
         this.link = link;
@@ -70,6 +72,10 @@ public final class Observer {
             CompanionMod.LOG.info(CompanionMod.TAG + "event death");
         }
         wasDead = dead;
+
+        for (Event ev : landmarks.tick(mc, player)) {
+            send(MessageType.EVENT, ev);
+        }
 
         if (++ticks % SNAPSHOT_EVERY_TICKS != 0) {
             return;

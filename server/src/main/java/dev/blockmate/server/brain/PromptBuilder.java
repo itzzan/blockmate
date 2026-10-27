@@ -43,6 +43,11 @@ public final class PromptBuilder {
         if (planExamples != null && !planExamples.isBlank()) {
             sb.append(planExamples.strip()).append("\n\n");
         }
+        if (ctx.progressLine() != null && !ctx.progressLine().isBlank()) {
+            // 任务单 17：后台按背包和账本算出来的，变得少，放前面不打断前缀缓存
+            sb.append("通关进度（后台算出来的事实，主人问到哪了、该干什么就照这个说，不要自己编阶段）：")
+                    .append(ctx.progressLine().strip()).append("\n\n");
+        }
         if (ctx.activePreferences() != null && !ctx.activePreferences().isEmpty()) {
             sb.append("已确认的偏好和约定：\n");
             for (String p : ctx.activePreferences()) {
@@ -60,7 +65,7 @@ public final class PromptBuilder {
         if (ctx.recentPlans() != null && !ctx.recentPlans().isEmpty()) {
             sb.append("最近做过的任务（结局）：\n");
             for (StoredPlan p : ctx.recentPlans()) {
-                sb.append("- ").append(DAY.format(Instant.ofEpochMilli(p.endedTs()))).append(' ')
+                sb.append("- ").append(dayLabel(p.endedTs())).append(' ')
                         .append(p.goal().strip()).append('：').append(outcomeZh(p.outcome())).append('\n');
             }
             sb.append('\n');
@@ -80,6 +85,12 @@ public final class PromptBuilder {
 
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("M月d日").withZone(ZoneId.systemDefault());
 
+    /** 任务单 17："今天做过的事"：当天的任务标"今天"，别的标日期。 */
+    static String dayLabel(long ts) {
+        java.time.LocalDate d = java.time.LocalDate.ofInstant(Instant.ofEpochMilli(ts), ZoneId.systemDefault());
+        return d.equals(java.time.LocalDate.now()) ? "今天" : DAY.format(Instant.ofEpochMilli(ts));
+    }
+
     static String outcomeZh(String outcome) {
         return switch (outcome == null ? "" : outcome) {
             case "done" -> "做成了";
@@ -92,7 +103,12 @@ public final class PromptBuilder {
 
     /** 每轮都变的状态句，放在最后一条消息里。 */
     public static String stateLine(BrainContext ctx, ItemNames names) {
-        return "现在的状态：" + SnapshotSummary.describe(ctx.snapshot(), ctx.executorOnline(), names);
+        String line = "现在的状态：" + SnapshotSummary.describe(ctx.snapshot(), ctx.executorOnline(), names);
+        if (ctx.landmarks() != null && !ctx.landmarks().isEmpty()) {
+            // 任务单 17：附近的地标随位置变，放在每轮的状态句里
+            line += "附近记得的地标：" + String.join("、", ctx.landmarks()) + "。";
+        }
+        return line;
     }
 
     /** system + 最近对话 + 这次的输入（来自主人的话）。 */

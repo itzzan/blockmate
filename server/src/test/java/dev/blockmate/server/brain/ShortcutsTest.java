@@ -43,4 +43,27 @@ class ShortcutsTest {
         assertEquals(CommandName.SLEEP, Shortcuts.match("去睡觉！").orElseThrow());
         assertEquals(CommandName.EAT, Shortcuts.match("吃点东西。").orElseThrow());
     }
+
+    @Test
+    void 任务单17_进度问句_记住这里是xx_记住我们到xx了() {
+        assertTrue(Shortcuts.isProgressQuestion("我们到哪了？"));
+        assertTrue(Shortcuts.isProgressQuestion("现在到哪了"));
+        assertTrue(Shortcuts.isProgressQuestion("进度"));
+        assertTrue(Shortcuts.isProgressQuestion("我们现在什么进度？"));
+        assertTrue(Shortcuts.isProgressQuestion("在哪个阶段"));
+        assertTrue(!Shortcuts.isProgressQuestion("我们到哪了，还要多久"), "带别的内容交给模型");
+        assertTrue(!Shortcuts.isProgressQuestion("村庄在哪"));
+        assertEquals("村庄", Shortcuts.rememberHere("记住这里是村庄！").orElseThrow());
+        assertEquals("矿洞", Shortcuts.rememberHere("记住这儿是矿洞").orElseThrow());
+        assertEquals("家", Shortcuts.rememberHere("记住这里是家").orElseThrow(), "家也匹配，调用方先查固定短语表");
+        assertTrue(Shortcuts.rememberHere("这里是村庄吗").isEmpty());
+        assertTrue(Shortcuts.rememberHere("记住村庄在东边").isEmpty());
+        assertEquals("铁器", Shortcuts.progressClaim("记住我们到铁器了").orElseThrow());
+        assertEquals("下界", Shortcuts.progressClaim("记住我们已经到下界了。").orElseThrow());
+        assertEquals("石器", Shortcuts.progressClaim("记住我们在石器阶段了").orElseThrow());
+        assertEquals("钻石", Shortcuts.progressClaim("记住我们做完钻石了").orElseThrow());
+        assertTrue(Shortcuts.progressClaim("我们到铁器了吗").isEmpty());
+        assertTrue(Shortcuts.progressClaim("记住我们到哪了").isEmpty() || Shortcuts.progressClaim("记住我们到哪了").isPresent(),
+                "这句不常见，交给调用方按阶段名查，查不到就说没听懂");
+    }
 }

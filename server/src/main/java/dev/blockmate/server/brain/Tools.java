@@ -15,6 +15,8 @@ public final class Tools {
 
     public static final String MAKE_PLAN = "make_plan";
     public static final String PLAN_DECISION = "plan_decision";
+    /** 任务单 17：主人问进度时调用，后台算出一句准确的话让模型照着说。 */
+    public static final String REPORT_PROGRESS = "report_progress";
 
     /** 动作工具：会变成发给模组的 command（第一阶段 7 个 + 任务单 11 加的 10 个单步工具）。 */
     public static final Set<String> ACTIONS = Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver",
@@ -59,6 +61,7 @@ public final class Tools {
                 "count", prop("integer", "数量"),
                 "to", prop("string", "交给谁的玩家名，可不填，默认是主人"))));
         a.add(fn("report_status", "看看自己现在在哪、有什么、在做什么", Map.of()));
+        a.add(fn("report_progress", "主人问\"我们到哪了\"\"接下来该干什么\"\"还缺什么\"这类通关进度的问题时用；后台会算出一句准确的话接在你的回答后面，所以你不要自己说阶段和缺什么，只说一句引子就行", Map.of()));
         // ---- 第二阶段的单步动作（任务单 11）。一句话一个动作就能做完时直接用这些，不要 make_plan ----
         a.add(fn("goto", "走到一个坐标，或走到记过的地点", Map.of(
                 "x", prop("number", "坐标 x"), "y", prop("number", "坐标 y"), "z", prop("number", "坐标 z"),

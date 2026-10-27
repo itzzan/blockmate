@@ -3,10 +3,17 @@ package dev.blockmate.protocol;
 /**
  * 有事发生时模组立刻发（细则第 6 节）。各 kind 用到的字段：
  * chat: from, text；death / respawn: pos, dim；kicked / disconnected: reason；
- * joined: 无；inventory_change: item, delta, count；auto_eat: item, count（吃完的饥饿值）；bed_collected: pos, dim。
+ * joined: 无；inventory_change: item, delta, count；auto_eat: item, count（吃完的饥饿值）；bed_collected: pos, dim；
+ * landmark / danger（任务单 17）: what, pos, dim。
  */
 public record Event(EventKind kind, String from, String text, Pos pos, String dim, String reason,
-                    String item, Integer delta, Integer count) {
+                    String item, Integer delta, Integer count, String what) {
+
+    /** 任务单 17 之前的九参数写法。 */
+    public Event(EventKind kind, String from, String text, Pos pos, String dim, String reason,
+                 String item, Integer delta, Integer count) {
+        this(kind, from, text, pos, dim, reason, item, delta, count, null);
+    }
 
     public static Event chat(String from, String text) {
         return new Event(EventKind.CHAT, from, text, null, null, null, null, null, null);
@@ -44,5 +51,15 @@ public record Event(EventKind kind, String from, String text, Pos pos, String di
     /** 任务单 15：睡醒后收回了自己放的床。 */
     public static Event bedCollected(Pos pos, String dim) {
         return new Event(EventKind.BED_COLLECTED, null, null, pos, dim, null, null, null, null);
+    }
+
+    /** 任务单 17：看见了一个地标。what 是地标种类，pos 是地标（不是自己）的位置。 */
+    public static Event landmark(String what, Pos pos, String dim) {
+        return new Event(EventKind.LANDMARK, null, null, pos, dim, null, null, null, null, what);
+    }
+
+    /** 任务单 17：看见了危险（第一版只有 lava）。 */
+    public static Event danger(String what, Pos pos, String dim) {
+        return new Event(EventKind.DANGER, null, null, pos, dim, null, null, null, null, what);
     }
 }
