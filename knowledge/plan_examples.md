@@ -12,6 +12,10 @@ mine{block: minecraft:oak_log, count: 20} → deliver{item: minecraft:oak_log, c
 mine{block: minecraft:oak_log, count: 3} → craft{item: minecraft:crafting_table} → place{block: minecraft:crafting_table} → mine{block: minecraft:cobblestone, count: 3} → craft{item: minecraft:stone_pickaxe} → pickup_block{block: minecraft:crafting_table} → deliver{item: minecraft:stone_pickaxe, count: 1}
 说明：craft 会顺手把需要的木板和木棍合成出来，不用单独写；放了工作台用完要收回。
 
+## 例 2b：挖 10 个石头（背包里没有镐）
+mine{block: minecraft:oak_log, count: 3} → craft{item: minecraft:crafting_table} → place{block: minecraft:crafting_table} → craft{item: minecraft:wooden_pickaxe} → pickup_block{block: minecraft:crafting_table} → mine{block: minecraft:stone, count: 10}
+说明：石头和矿徒手挖了不掉东西，先有镐再挖；背包里已经有镐就直接 mine。
+
 ## 例 3：回家睡觉
 go_home → sleep
 说明：没记过家就先问主人家在哪，或者让主人带你到家再说"记住这里是家"（remember_place{name: home}）。

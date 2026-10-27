@@ -1,4 +1,4 @@
 {"v": 1, "type": "hello", "id": "0a1b2c3d-0004-4000-8000-000000000004", "ts": 1760950000010, "from": "hub", "to": "mc",
  "body": {"ok": true, "server_time": 1760950000010, "protocol_v": 1,
   "rules": {"mineable": ["minecraft:oak_log", "minecraft:stone", "minecraft:coal_ore"], "placeable": ["minecraft:crafting_table", "minecraft:torch", "minecraft:red_bed"],
-   "drops": {"minecraft:stone": "minecraft:cobblestone", "minecraft:coal_ore": "minecraft:coal"}, "avoid_food": ["minecraft:rotten_flesh", "minecraft:spider_eye"]}}}
+   "drops": {"minecraft:stone": "minecraft:cobblestone", "minecraft:coal_ore": "minecraft:coal"}, "avoid_food": ["minecraft:rotten_flesh", "minecraft:spider_eye"], "needs_pickaxe": ["minecraft:stone", "minecraft:coal_ore"]}}}

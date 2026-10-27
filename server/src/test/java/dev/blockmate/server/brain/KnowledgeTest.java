@@ -73,6 +73,9 @@ class KnowledgeTest {
         assertEquals("minecraft:raw_iron", r.dropOf("minecraft:deepslate_iron_ore"));
         assertEquals(8, r.dropsOrEmpty().size());
         assertTrue(r.avoidFood().contains("minecraft:rotten_flesh"), "仓库 food.yaml 里腐肉是不该吃的");
+        assertTrue(r.needsPickaxe().contains("minecraft:stone"), "石头要镐");
+        assertTrue(r.needsPickaxe().contains("minecraft:furnace"));
+        assertEquals(9, r.needsPickaxe().size());
         assertEquals(6, r.avoidFood().size());
     }
 }

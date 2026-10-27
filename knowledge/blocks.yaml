@@ -44,6 +44,19 @@ drops:
   minecraft:copper_ore: minecraft:raw_copper
   minecraft:deepslate_copper_ore: minecraft:raw_copper
 
+# 徒手挖了不掉东西、必须拿镐的方块（真游戏预检 2026-10-27：没镐挖了 5 分钟石头一块圆石都没有）。
+# 模组开挖前查：清单里的方块而背包没有任何镐 → 回 no_materials（缺 pickaxe），不去白挖。
+needs_pickaxe:
+  - minecraft:stone
+  - minecraft:deepslate
+  - minecraft:coal_ore
+  - minecraft:deepslate_coal_ore
+  - minecraft:iron_ore
+  - minecraft:deepslate_iron_ore
+  - minecraft:copper_ore
+  - minecraft:deepslate_copper_ore
+  - minecraft:furnace          # 收回自己放的熔炉也要镐
+
 never_touch:
   # 只是说明：这些一看就是别人的东西或房子的一部分，哪怕主人叫它碰也不碰
   - 箱子、木桶、潜影盒、熔炉、高炉、烟熏炉、附魔台、酿造台

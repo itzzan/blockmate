@@ -231,6 +231,9 @@ public final class Brain {
                     }
                     case EAT -> {
                         Result.EatDetail d = r.detailAs(Result.EatDetail.class);
+                        if (d != null && d.item() == null) {
+                            return "饱着呢（饥饿值 " + d.foodAfter() + "/20），吃不下，没吃";
+                        }
                         if (d != null) {
                             return "成功，吃了 " + d.item() + "，饥饿值现在 " + d.foodAfter() + "/20";
                         }

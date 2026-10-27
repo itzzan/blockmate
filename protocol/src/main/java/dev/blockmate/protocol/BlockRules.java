@@ -8,19 +8,30 @@ import java.util.Map;
  * mineable / placeable 空清单 = 什么都不许挖、不许放（安全默认）。
  * drops（任务单 13）：方块 → 挖掉后背包里多的物品，没写的和方块同名。
  * avoidFood（任务单 15）：不该吃的食物，只有没别的可吃时才碰。
+ * needsPickaxe：徒手挖了不掉东西的方块，没镐别去挖。
  */
-public record BlockRules(List<String> mineable, List<String> placeable, Map<String, String> drops, List<String> avoidFood) {
+public record BlockRules(List<String> mineable, List<String> placeable, Map<String, String> drops, List<String> avoidFood,
+                         List<String> needsPickaxe) {
 
     public BlockRules(List<String> mineable, List<String> placeable) {
-        this(mineable, placeable, Map.of(), List.of());
+        this(mineable, placeable, Map.of(), List.of(), List.of());
     }
 
     public BlockRules(List<String> mineable, List<String> placeable, Map<String, String> drops) {
-        this(mineable, placeable, drops, List.of());
+        this(mineable, placeable, drops, List.of(), List.of());
+    }
+
+    public BlockRules(List<String> mineable, List<String> placeable, Map<String, String> drops, List<String> avoidFood) {
+        this(mineable, placeable, drops, avoidFood, List.of());
     }
 
     public static BlockRules empty() {
-        return new BlockRules(List.of(), List.of(), Map.of(), List.of());
+        return new BlockRules(List.of(), List.of(), Map.of(), List.of(), List.of());
+    }
+
+    /** 徒手挖不掉东西、必须拿镐的方块（任务单 13 补）。 */
+    public List<String> needsPickaxeOrEmpty() {
+        return needsPickaxe == null ? List.of() : needsPickaxe;
     }
 
     /** 老版本后台发来的 JSON 没有 drops 时为 null，这里兜成空表。 */

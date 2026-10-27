@@ -12,6 +12,6 @@ export OLLAMA_HOST="$("$TS" ip -4):11434"
 # ---- 本机版（单机开发时用）----
 # export OLLAMA_HOST="127.0.0.1:11434"
 
-export OLLAMA_KEEP_ALIVE=-1          # 模型加载后一直留在内存，不闲置卸载
+export OLLAMA_KEEP_ALIVE=30m         # 闲置 30 分钟自动卸载模型（2026-10-27 主人定：不用时还回 26 GB，代价是隔久了第一句等 30–60 秒）
 export OLLAMA_CONTEXT_LENGTH=16384   # 和 ops/Modelfile 里的 num_ctx 一致
 exec /opt/homebrew/bin/ollama serve

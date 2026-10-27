@@ -85,7 +85,7 @@ public final class Executor implements AbstractGameEventListener {
     private static final int CRAFT_RESULT_WAIT_TICKS = 60;   // 点完结果格后等 3 秒背包没多东西算服务器没认
     private static final int PLACE_SETTLE_TICKS = 3;         // 换到快捷栏后等几 tick 再放
     private static final int PLACE_CONFIRM_TICKS = 20;       // 放下去后等 1 秒确认方块出现
-    private static final int BREAK_TIMEOUT_TICKS = 200;      // 10 秒还没挖掉
+    private static final int BREAK_TIMEOUT_TICKS = 400;      // 20 秒还没挖掉（徒手拆工作台 ~4 秒，拿镐拆熔炉 ~1 秒）
     private static final int PICK_TIMEOUT_TICKS = 100;       // 挖掉后 5 秒内要捡到
     private static final int PLACE_HOTBAR_SLOT = 8;          // 放方块用快捷栏最后一格
     private static final int STATION_RADIUS = 8;             // 工作台 / 熔炉在 8 格内才算"附近有"
@@ -165,6 +165,7 @@ public final class Executor implements AbstractGameEventListener {
         // 任务单 15
         boolean internal;     // 模组自己发起的（自动吃、收床），不回 ack / result
         int foodBefore;
+        boolean dugOut;       // 走不出去时已经试过一次"准挖自然方块"
         // deliver
         Phase phase = Phase.APPROACH;
         String targetName;
@@ -610,6 +611,14 @@ public final class Executor implements AbstractGameEventListener {
         LocalPlayer me = mc.player;
         Command.EatArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.EatArgs.class);
         String wanted = a == null ? null : normalizeItem(a.item());
+        if (me.getFoodData().getFoodLevel() >= 20) {
+            if (internal) {
+                return;
+            }
+            CompanionMod.LOG.info(CompanionMod.TAG + "eat: food is full -> ok, nothing eaten");
+            finish(Result.ok(id, new Result.EatDetail(null, 20)));
+            return;
+        }
         Survival.Food pick = Survival.pick(foods(me), rules.avoidFood(), wanted).orElse(null);
         if (pick == null) {
             if (internal) {
@@ -1299,6 +1308,14 @@ public final class Executor implements AbstractGameEventListener {
                     return OpState.RUNNING;
                 }
                 if (!t.opBreaking) {
+                    int pick = findPickaxe(me);
+                    if (pick >= 0) {
+                        equip(mc, me, pick); // 工作台徒手也行，熔炉没镐挖不掉；有镐就拿着，快得多
+                    } else if (rules.needsPickaxe(t.opBlockId)) {
+                        CompanionMod.LOG.info(CompanionMod.TAG + "break op: {} needs a pickaxe and there is none -> stuck", t.opBlockId);
+                        t.opReason = Reason.STUCK;
+                        return OpState.FAILED;
+                    }
                     BreakGuard.allowBreakOnly(List.of(t.opBlock), "break op " + t.opBlockId);
                     mc.gameMode.startDestroyBlock(t.opPos, Direction.UP);
                     t.opBreaking = true;
@@ -1545,6 +1562,60 @@ public final class Executor implements AbstractGameEventListener {
         }
     }
 
+    /** 背包里最好的镐（木 < 石 < 铁 < 钻 < 下界合金），没有返回 -1。 */
+    static int findPickaxe(LocalPlayer me) {
+        String[] order = {"minecraft:netherite_pickaxe", "minecraft:diamond_pickaxe", "minecraft:iron_pickaxe", "minecraft:golden_pickaxe",
+                "minecraft:stone_pickaxe", "minecraft:wooden_pickaxe"};
+        for (String id : order) {
+            int i = findInventoryIndex(me, id);
+            if (i >= 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** 把背包第 src 格拿到手上（在快捷栏就选中，不在就换到快捷栏最后一格）。 */
+    private static void equip(Minecraft mc, LocalPlayer me, int src) {
+        if (src < 9) {
+            me.getInventory().selected = src;
+        } else {
+            mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId, ContainerSlots.slotFor(src, ContainerSlots.INVENTORY_MENU_START),
+                    PLACE_HOTBAR_SLOT, ClickType.SWAP, me);
+            me.getInventory().selected = PLACE_HOTBAR_SLOT;
+        }
+    }
+
+    /**
+     * 走不出去（多半是挖矿时把自己挖进洞里了）：准许破坏整张可挖清单（都是自然方块，房子的东西不在里面）再找一次路。
+     * 只试一次；返回 true 表示已经重新设目标。
+     */
+    private boolean digOutRetry(Task t, IBaritone b, BlockPos goal, int range) {
+        if (t.dugOut || b == null) {
+            return false;
+        }
+        t.dugOut = true;
+        List<Block> allowed = new ArrayList<>();
+        for (String idStr : rules.mineableIds()) {
+            ResourceLocation r = ResourceLocation.tryParse(idStr);
+            Block bl = r == null ? null : ForgeRegistries.BLOCKS.getValue(r);
+            if (bl != null && bl != Blocks.AIR) {
+                allowed.add(bl);
+            }
+        }
+        if (allowed.isEmpty()) {
+            return false;
+        }
+        int pick = findPickaxe(Minecraft.getInstance().player);
+        if (pick >= 0) {
+            equip(Minecraft.getInstance(), Minecraft.getInstance().player, pick);
+        }
+        BreakGuard.allowBreakOnly(allowed, "dig out: path failed");
+        CompanionMod.LOG.info(CompanionMod.TAG + "path failed, retrying once with natural blocks breakable");
+        setGoal(b, t, goal, range);
+        return true;
+    }
+
     /** 主背包里第一格有这种物品的序号（0–8 快捷栏），没有返回 -1。 */
     static int findInventoryIndex(LocalPlayer me, String item) {
         var items = me.getInventory().items;
@@ -1592,6 +1663,9 @@ public final class Executor implements AbstractGameEventListener {
             return;
         }
         if (t.pathFailed) {
+            if (digOutRetry(t, b, goalPos(null, t), 2)) {
+                return;
+            }
             BaritoneBridge.cancelEverything();
             finish(Result.failed(t.id, Reason.PATH_FAILED, new Result.GotoDetail(round(dist))));
             return;
@@ -1638,6 +1712,15 @@ public final class Executor implements AbstractGameEventListener {
             return;
         }
         LocalPlayer me = mc.player;
+        if (rules.needsPickaxe(blockId)) {
+            int pick = findPickaxe(me);
+            if (pick < 0) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "mine: {} needs a pickaxe and there is none -> no_materials", blockId);
+                finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of("minecraft:wooden_pickaxe", 1))));
+                return;
+            }
+            equip(mc, me, pick);
+        }
         int nearby = countBlocksAround(mc, me.blockPosition(), block, radius);
         if (nearby == 0) {
             CompanionMod.LOG.info(CompanionMod.TAG + "mine: no {} within {} blocks -> item_not_found", blockId, radius);
@@ -1851,6 +1934,9 @@ public final class Executor implements AbstractGameEventListener {
             return;
         }
         if (t.pathFailed) {
+            if (digOutRetry(t, b, goalPos(owner, t), 2)) {
+                return;
+            }
             BaritoneBridge.cancelEverything();
             finish(Result.failed(t.id, Reason.PATH_FAILED));
             return;

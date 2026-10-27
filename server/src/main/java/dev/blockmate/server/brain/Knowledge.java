@@ -97,7 +97,7 @@ public final class Knowledge {
             log.warn("knowledge file missing: {}（没有白名单，伙伴什么都不许挖、不许放）", p);
             rulesWarned = true;
         }
-        return new BlockRules(base.mineable(), base.placeable(), base.dropsOrEmpty(), avoidFood());
+        return new BlockRules(base.mineable(), base.placeable(), base.dropsOrEmpty(), avoidFood(), base.needsPickaxeOrEmpty());
     }
 
     /** food.yaml 的 avoid 段：不该吃的食物。缺失 = 空。 */
@@ -125,7 +125,8 @@ public final class Knowledge {
         if (!(loaded instanceof Map<?, ?> m)) {
             return BlockRules.empty();
         }
-        return new BlockRules(idList(m.get("mineable")), idList(m.get("placeable")), dropMap(m.get("drops")));
+        return new BlockRules(idList(m.get("mineable")), idList(m.get("placeable")), dropMap(m.get("drops")), List.of(),
+                idList(m.get("needs_pickaxe")));
     }
 
     private static Map<String, String> dropMap(Object o) {

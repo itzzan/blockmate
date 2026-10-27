@@ -29,6 +29,15 @@ class RulesTest {
     }
 
     @Test
+    void 要镐的方块() {
+        Rules r = Rules.of(List.of("stone", "dirt"), List.of(), null, null, List.of("stone", "minecraft:furnace"));
+        assertTrue(r.needsPickaxe("minecraft:stone"));
+        assertTrue(r.needsPickaxe("furnace"));
+        assertFalse(r.needsPickaxe("minecraft:dirt"));
+        assertFalse(Rules.EMPTY.needsPickaxe("minecraft:stone"), "没发清单就当不用镐（白名单那关本来就过不了）");
+    }
+
+    @Test
     void 没收到清单全不许() {
         assertFalse(Rules.EMPTY.received());
         assertFalse(Rules.EMPTY.canMine("minecraft:oak_log"));
