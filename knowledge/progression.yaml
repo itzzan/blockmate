@@ -1,0 +1,189 @@
+# 通关地图（知识层，guide-3 任务单 16）：原版生存从空手到打龙要经过哪些阶段、每个阶段要有什么、建议先做什么。
+#
+# 这是纯数据，后台 Progression 类读它来算"我们现在在哪个阶段、缺什么"，模型不参与，代码里没有任何阶段知识。
+# 改了这个文件后台会自动重新读（按修改时间），不用重启，也不用伙伴重连。
+#
+# 算法（写在这里是为了改文件的人心里有数）：
+#   1. 从第一个阶段往后看，一个阶段的 needs 全部满足（只算伙伴背包里的，箱子里的不算）且 facts 全部有，就算做完。
+#   2. 后面的阶段做完了，前面的也算做完（有铁镐就不会是"开局"）；做过的阶段后台会记进 progress 表（任务单 17），以后背包空了也不退回。
+#   3. 第一个没做完的就是"当前阶段"，它的 needs / facts 里没满足的就是"缺什么"。
+#
+# 写法：
+#   item_groups：等价物品组，"石镐或更好的镐都算"这类；name 是给主人看的中文，items 是物品 id（不写 minecraft: 前缀后台会补）。
+#   stages：有序；每个阶段 id / name / needs / facts / actions / risks / say。
+#     needs：一行一条，item（单个物品）或 group（上面的组）二选一，count 不写就是 1；组按组内所有物品的数量加起来算。
+#     facts：要有的世界事实，来源见下面 fact_names；现在（任务单 16）还没有东西写事实，任务单 17 起由地标扫描和事件填。
+#     actions：推荐动作，用第二、三阶段的命令名写成计划草稿，只是草稿，真要做时还要过计划校验（比如 diamond_ore 现在不在 blocks.yaml 的可挖清单里）。
+#     risks：一句提醒；say：阶段开始时给主人的一句说明。
+
+item_groups:
+  logs:
+    name: 原木
+    items: [oak_log, spruce_log, birch_log, jungle_log, acacia_log, dark_oak_log, mangrove_log, cherry_log]
+  planks:
+    name: 木板
+    items: [oak_planks, spruce_planks, birch_planks, jungle_planks, acacia_planks, dark_oak_planks, mangrove_planks, cherry_planks, bamboo_planks, crimson_planks, warped_planks]
+  pickaxe_wood_plus:
+    name: 镐（木镐或更好）
+    items: [wooden_pickaxe, golden_pickaxe, stone_pickaxe, iron_pickaxe, diamond_pickaxe, netherite_pickaxe]
+  pickaxe_stone_plus:
+    name: 镐（石镐或更好）
+    items: [stone_pickaxe, iron_pickaxe, diamond_pickaxe, netherite_pickaxe]
+  pickaxe_iron_plus:
+    name: 镐（铁镐或更好）
+    items: [iron_pickaxe, diamond_pickaxe, netherite_pickaxe]
+  pickaxe_diamond_plus:
+    name: 钻石镐（或下界合金镐）
+    items: [diamond_pickaxe, netherite_pickaxe]
+  sword_stone_plus:
+    name: 剑（石剑或更好）
+    items: [stone_sword, iron_sword, diamond_sword, netherite_sword]
+  sword_iron_plus:
+    name: 剑（铁剑或更好）
+    items: [iron_sword, diamond_sword, netherite_sword]
+  bed:
+    name: 床
+    items: [white_bed, orange_bed, magenta_bed, light_blue_bed, yellow_bed, lime_bed, pink_bed, gray_bed, light_gray_bed, cyan_bed, purple_bed, blue_bed, brown_bed, green_bed, red_bed, black_bed]
+  cooked_food:
+    name: 吃的（熟食、面包这类）
+    items: [bread, cooked_beef, cooked_porkchop, cooked_chicken, cooked_mutton, cooked_rabbit, cooked_cod, cooked_salmon, baked_potato, golden_carrot, pumpkin_pie, cookie, apple, carrot, mushroom_stew, beetroot_soup, rabbit_stew, golden_apple]
+  fuel:
+    name: 燃料
+    items: [coal, charcoal, coal_block, lava_bucket, dried_kelp_block]
+  bucket_any:
+    name: 桶
+    items: [bucket, water_bucket]
+
+# 世界事实的中文名（任务单 17 起由后台写入；portal_* / fortress / stronghold / end_portal 来自地标扫描或主人说的，
+# visited_* 来自换维度事件，dragon_killed 来自战斗事件）。
+fact_names:
+  village: 见过村庄
+  portal_overworld: 主世界这边的传送门点好了
+  portal_nether: 下界那边的传送门
+  visited_nether: 去过下界
+  fortress: 找到下界要塞
+  stronghold: 找到要塞
+  end_portal: 找到末地传送门
+  visited_end: 去过末地
+  dragon_killed: 打过龙
+
+stages:
+  - id: start
+    name: 开局
+    needs:
+      - {group: pickaxe_wood_plus, count: 1}
+    actions:
+      - mine oak_log 8
+      - craft crafting_table 1
+      - craft wooden_pickaxe 1
+    risks: 天黑前要有个能躲的地方，第一晚别在野外站着。
+    say: 先砍点木头，做个工作台和木镐。
+
+  - id: stone
+    name: 石器
+    needs:
+      - {group: pickaxe_stone_plus, count: 1}
+      - {item: furnace, count: 1}
+    actions:
+      - mine stone 12
+      - craft stone_pickaxe 1
+      - craft furnace 1
+      - craft stone_sword 1
+    risks: 挖石头别挖到自家墙上；熔炉用完记得收回来。
+    say: 有木镐了，挖点石头换成石镐，再做个熔炉。
+
+  - id: food
+    name: 吃饱
+    needs:
+      - {group: cooked_food, count: 8}
+    actions:
+      - collect apple
+      - craft bread 3
+      - ask_owner 要点吃的
+    risks: 动物我不打（铁规矩），肉得主人给；饿到一半以下我会自己吃。
+    say: 该囤点吃的了，有小麦就做面包，不然得你给我点肉。
+
+  - id: iron
+    name: 铁器
+    needs:
+      - {group: pickaxe_iron_plus, count: 1}
+      - {group: sword_iron_plus, count: 1}
+      - {item: shield, count: 1}
+      - {group: bucket_any, count: 1}
+    actions:
+      - mine coal_ore 8
+      - mine iron_ore 9
+      - use_furnace raw_iron 9
+      - craft iron_pickaxe 1
+      - craft iron_sword 1
+      - craft shield 1
+      - craft bucket 1
+    risks: 矿洞里夜怪多，别一个人往深处钻；有盾先举盾。
+    say: 还没有铁，先找个洞口挖煤和铁，烧成铁锭做铁镐、铁剑、盾和桶。
+
+  - id: diamond
+    name: 钻石
+    needs:
+      - {group: pickaxe_diamond_plus, count: 1}
+    actions:
+      - goto y=-58 的深处
+      - mine diamond_ore 3
+      - craft diamond_pickaxe 1
+    risks: 深处挖矿岩浆多，挖到脚下看见岩浆就停；桶里装水带着。
+    say: 铁器齐了，去深处找钻石，做一把钻石镐才挖得动黑曜石。
+
+  - id: nether_prep
+    name: 下界准备
+    needs:
+      - {item: obsidian, count: 10}
+      - {item: flint_and_steel, count: 1}
+      - {group: sword_iron_plus, count: 1}
+      - {group: cooked_food, count: 8}
+    actions:
+      - mine obsidian 10
+      - craft flint_and_steel 1
+      - use_furnace beef 8
+    risks: 黑曜石都在岩浆边上，挖之前先把水倒上去；打火石要一个铁锭一个燧石（挖沙砾出）。
+    say: 有钻石镐了，去岩浆边挖 10 块黑曜石，做个打火石，带够吃的和剑，就能去下界了。
+
+  - id: nether
+    name: 下界
+    needs:
+      - {group: cooked_food, count: 8}
+    facts: [portal_overworld, visited_nether, fortress]
+    actions:
+      - build_portal
+      - ask_owner 门搭好了，点吗
+      - light_portal
+      - explore 找要塞
+    risks: 下界别在岩浆边挖，掉下去东西就没了；离主人不超过 16 格。
+    say: 材料齐了，我把门框搭好，点燃之前问你；进去以后先找下界要塞。
+
+  - id: end_prep
+    name: 末地准备
+    needs:
+      - {item: ender_eye, count: 12}
+    actions:
+      - fight blaze
+      - collect blaze_rod 7
+      - ask_owner 末影珍珠 12 个得你来（我不打末影人），或者去和猪灵换
+      - craft blaze_powder 12
+      - craft ender_eye 12
+    risks: 烈焰人会喷火，打之前血要满、带够吃的；末影人我不碰，珍珠得你弄。
+    say: 要塞找到了，打烈焰人攒 7 根烈焰棒，珍珠你来，凑 12 个末影之眼就能找末地传送门。
+
+  - id: end
+    name: 末地
+    needs:
+      - {item: bow, count: 1}
+      - {item: arrow, count: 16}
+      - {group: cooked_food, count: 16}
+    facts: [stronghold, end_portal, visited_end, dragon_killed]
+    actions:
+      - ask_owner 你投末影之眼，我看方向
+      - lead stronghold
+      - explore 找传送门房
+      - ask_owner 眼你来放，进门我先问你
+      - fight ender_dragon
+    risks: 龙息不能站在里面；没弓我打不了水晶，只能守着你。
+    say: 眼齐了，你投我看方向，找到要塞后带你到传送门房；打龙我打水晶和龙，你注意躲龙息。

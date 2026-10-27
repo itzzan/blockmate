@@ -16,7 +16,7 @@ import java.util.Map;
 
 /**
  * 知识层的文件（任务单 11）：knowledge/ 目录下的纯文本，和 persona.md 一样按修改时间热重载。
- * 现在只有 plan_examples.md（常见任务怎么拆）；第二阶段后面还会有 blocks.yaml 等。
+ * plan_examples.md（常见任务怎么拆）、blocks.yaml（任务单 12/13）、food.yaml（任务单 15）、progression.yaml（任务单 16，通关地图）。
  */
 public final class Knowledge {
 
@@ -31,6 +31,9 @@ public final class Knowledge {
     private boolean rulesWarned;
     private List<String> avoidFood = List.of();
     private FileTime foodMtime;
+    private Progression progression = Progression.empty();
+    private FileTime progressionMtime;
+    private boolean progressionWarned;
 
     public Knowledge(Path dir) {
         this.dir = dir;
@@ -118,6 +121,43 @@ public final class Knowledge {
             log.warn("knowledge food.yaml read failed: {}", e.getMessage());
         }
         return List.of();
+    }
+
+    /**
+     * progression.yaml 的通关地图（任务单 16）。文件缺失或坏了 = 空地图（Progression.empty()，describe 会说"没有通关地图"）；
+     * 坏文件只在它再次被改动时重读，不会每次都报错。
+     */
+    public synchronized Progression progression() {
+        if (dir == null) {
+            return progression;
+        }
+        Path p = dir.resolve("progression.yaml");
+        if (!Files.exists(p)) {
+            if (!progressionWarned) {
+                log.warn("knowledge file missing: {}（没有通关地图，说不清走到哪个阶段）", p);
+                progressionWarned = true;
+            }
+            return Progression.empty();
+        }
+        FileTime mtime;
+        try {
+            mtime = Files.getLastModifiedTime(p);
+        } catch (IOException e) {
+            log.warn("knowledge progression.yaml stat failed: {}", e.getMessage());
+            return progression;
+        }
+        if (progressionMtime == null || !mtime.equals(progressionMtime)) {
+            progressionMtime = mtime;
+            try {
+                progression = Progression.parse(Files.readString(p, StandardCharsets.UTF_8));
+                log.info("knowledge loaded file=progression.yaml stages={} groups={}", progression.stages().size(),
+                        progression.groups().size());
+            } catch (IOException | RuntimeException e) {
+                progression = Progression.empty();
+                log.warn("knowledge progression.yaml read failed: {}（按没有通关地图处理）", e.getMessage());
+            }
+        }
+        return progression;
     }
 
     static BlockRules parseRules(String yamlText) {

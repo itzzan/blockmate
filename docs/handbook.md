@@ -337,6 +337,7 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
 - 说话：make_plan 那一轮模型的文字就是"打算"，直接当回复；每步 ok 不说；最后一步 ok 时的"说一句"提示改成"主人要的「目标」你全部做完了，最后一步「…」：…"。
 - 【任务单 13】system 里"最近任务"之后加一行「记过的地点（说"回家"或"去 xx"就能去）：home（x, y, z）、…」；一个都没记过时写「还没记过任何地点：主人说"记住这里是家"你就记下 home；没记过家时主人让你回家，要先问家在哪」。
 - 日志：`plan_accepted steps= attempt=`、`plan_rejected attempt= errors=`（errors 是校验短语，不含原话）、`plan_decision plan_id= index= action= say_len=`、`plan_replan plan_id= from_index= new_steps=`、`plan_replan_rejected`、`knowledge loaded file= len=`。
+- 【任务单 16】通关地图（2026-10-27，guide-3 §1.1）：`knowledge/progression.yaml` 三段——`item_groups`（等价物品组，每组 name 中文 + items；"石镐或更好的镐"这类）、`fact_names`（世界事实 id → 中文）、`stages`（有序 9 个：start / stone / food / iron / diamond / nether_prep / nether / end_prep / end，每个 id / name / needs / facts / actions / risks / say；needs 一条是 item 或 group 加 count，组按组内物品数量加总）。`Knowledge.progression()` 和 blocks.yaml 一样按修改时间热重载，文件缺失或坏了（没 id、id 重复、needs 引用不存在的组）按空地图处理并记一条 warn，坏文件改动前不重读。`Progression.assess(背包, 事实, 记过的阶段)` 是纯逻辑：needs 全满足（只算背包里的，箱子不算）且 facts 全有的阶段算做完；后面的做完了前面的也算做完（有铁镐就不会是"开局"）；progress 表记过的（任务单 17）不退回；第一个没做完的是当前阶段，它没满足的 needs / facts 就是缺什么。`describe()` 给一句算出来的话：「现在在「铁器」阶段（9 个阶段里的第 4 个），缺：镐（铁镐或更好）0/1、盾牌 0/1。还没有铁，先找个洞口挖煤和铁……」，不经过模型。这一张还没接进提示词、固定短语和 progress 表，任务单 17 做；actions 只是计划草稿，真要派还得过 PlanValidator（diamond_ore、obsidian 等现在不在 blocks.yaml 的 mineable 里，到任务单 18 让提议变计划时再决定加不加）。
 
 ## 10. Gateway：和 Ollama 怎么说话
 

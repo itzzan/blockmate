@@ -24,5 +24,7 @@
   "minecraft:bed": "床", "minecraft:white_bed": "白色床", "minecraft:red_bed": "红色床", "minecraft:oak_door": "橡木门",
   "minecraft:oak_fence": "橡木栅栏", "minecraft:ladder": "梯子", "minecraft:glass": "玻璃", "minecraft:white_wool": "白色羊毛",
   "minecraft:furnace": "熔炉", "minecraft:oak_sapling": "橡树树苗", "minecraft:bone_meal": "骨粉", "minecraft:compass": "指南针",
-  "minecraft:clock": "时钟", "minecraft:map": "地图", "minecraft:boat": "船", "minecraft:oak_boat": "橡木船"
+  "minecraft:clock": "时钟", "minecraft:map": "地图", "minecraft:boat": "船", "minecraft:oak_boat": "橡木船",
+  "minecraft:obsidian": "黑曜石", "minecraft:flint_and_steel": "打火石", "minecraft:blaze_rod": "烈焰棒", "minecraft:blaze_powder": "烈焰粉",
+  "minecraft:ender_eye": "末影之眼", "minecraft:diamond_sword": "钻石剑", "minecraft:netherite_pickaxe": "下界合金镐", "minecraft:water_bucket": "水桶"
 }
