@@ -1,7 +1,12 @@
 package dev.blockmate.protocol;
 
 /** hub → ui 的状态条内容（细则第 14 节）。伙伴离线时 companion.online=false，其余为 null。 */
-public record Status(CompanionState companion, TaskInfo task, KeeperState keeper, ModelState model) {
+public record Status(CompanionState companion, TaskInfo task, KeeperState keeper, ModelState model, Boolean idle) {
+
+    /** 任务单 18 之前的写法（没有"主动说话"开关）。 */
+    public Status(CompanionState companion, TaskInfo task, KeeperState keeper, ModelState model) {
+        this(companion, task, keeper, model, null);
+    }
 
     /** inventorySummary 是 hub 用物品中文名生成的一句话（"橡木原木 8、面包 3"），给状态条直接显示。 */
     public record CompanionState(boolean online, Boolean inWorld, Double health, Integer food, String dim, Pos pos,

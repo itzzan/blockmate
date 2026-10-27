@@ -25,6 +25,10 @@ public final class Config {
     }
 
     /** 自动上下线：每 pollS 秒查一次谁在线；主人离开 offlineAfterMin 分钟后让伙伴下线。开关本身存在设置表里。 */
+    /** 任务单 18：空闲循环——没人说话时每 intervalS 秒想一次要不要主动说点什么；网页上的开关存在设置表里，优先于这里的 enabled。 */
+    public record Idle(boolean enabled, int intervalS) {
+    }
+
     public record AutoPresence(int pollS, int offlineAfterMin) {
     }
 
@@ -46,6 +50,7 @@ public final class Config {
     /** config.yaml 没有 rcon 一段时为 null，自动上下线不可用。 */
     public final Rcon rcon;
     public final AutoPresence autoPresence;
+    public final Idle idle;
 
     private Config(Path baseDir, Map<String, Object> m) {
         this.baseDir = baseDir;
@@ -76,6 +81,9 @@ public final class Config {
         }
         Map<String, Object> a = sub(m, "auto_presence");
         this.autoPresence = new AutoPresence(intOf(a, "poll_s", 30), intOf(a, "offline_after_min", 10));
+        Map<String, Object> i = sub(m, "idle");
+        Object en = i.get("enabled");
+        this.idle = new Idle(en == null || Boolean.parseBoolean(String.valueOf(en)), intOf(i, "interval_s", 60));
     }
 
     public static Config load(Path file) throws IOException {

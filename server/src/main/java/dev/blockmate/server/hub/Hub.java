@@ -14,6 +14,7 @@ import dev.blockmate.protocol.Event;
 import dev.blockmate.protocol.Hello;
 import dev.blockmate.protocol.HelloOk;
 import dev.blockmate.protocol.KeeperCmd;
+import dev.blockmate.protocol.IdleControl;
 import dev.blockmate.protocol.KeeperControl;
 import dev.blockmate.protocol.KeeperStatus;
 import dev.blockmate.protocol.MessageType;
@@ -127,6 +128,17 @@ public final class Hub {
     /** 同种世界事实在这个距离内已有记录就不重复记。 */
     static final double FACT_DEDUPE_RADIUS = 32;
 
+    // ---------- 任务单 18：空闲循环 ----------
+    private final IdlePolicy idle;
+    /** 网页开关（设置表 idle_enabled），没设过时取 config 的 idle.enabled。 */
+    private boolean idleEnabled;
+    /** 正在模型里跑的请求数（决策、说一句、四选一、想一想）；> 0 就是"模型没空"。 */
+    private int brainBusy;
+    private boolean idleThinking;
+    /** 当前计划是谁发起的：owner（主人要的）/ idle（它提议、主人点头的），plans 表的 source 列。 */
+    private String planSource = "owner";
+    private String pendingPlanSource = "owner";
+
     public Hub(Config cfg, Memory memory, Brain brain, ItemNames names, ScheduledExecutorService exec,
                ExecutorService brainExec) {
         this(cfg, memory, brain, Knowledge.empty(), names, exec, brainExec);
@@ -147,6 +159,20 @@ public final class Hub {
         this.autoPresence = autoAvailable && "on".equals(memory.setting("keeper_auto").orElse("off"));
         this.presence = new PresencePolicy(cfg.autoPresence.offlineAfterMin() * 60_000L);
         this.historyWindow = new HistoryWindow(cfg.historyN, cfg.historyN * 2);
+        this.idle = new IdlePolicy(cfg.idle.intervalS() * 1000L);
+        this.idleEnabled = "on".equals(memory.setting("idle_enabled").orElse(cfg.idle.enabled() ? "on" : "off"));
+    }
+
+    /** 所有模型调用都从这里进 brain 线程，顺便数着"模型忙不忙"（空闲循环只在模型空着时想）。 */
+    private void runBrain(Runnable r) {
+        brainBusy++;
+        brainExec.execute(() -> {
+            try {
+                r.run();
+            } finally {
+                submit(() -> brainBusy--);
+            }
+        });
     }
 
     public void submit(Runnable r) {
@@ -489,12 +515,20 @@ public final class Hub {
 
     // ---------------- 计划（任务单 10） ----------------
 
+    /** 任务单 18：由提议发起的计划 source 记 idle。 */
+    public void startPlan(String goal, List<PlanRun.Step> steps, String sourceMessageId, String source) {
+        pendingPlanSource = source == null ? "owner" : source;
+        startPlan(goal, steps, sourceMessageId);
+    }
+
     /** 开始一个计划；有在跑的旧计划就按 aborted 结束它（模组那边新命令会取消旧命令）。 */
     public void startPlan(String goal, List<PlanRun.Step> steps, String sourceMessageId) {
         if (plan != null && plan.running()) {
             plan.abort(PlanRun.Outcome.ABORTED, now());
             finishPlan();
         }
+        planSource = pendingPlanSource;
+        pendingPlanSource = "owner";
         plan = new PlanRun(UUID.randomUUID().toString(), goal == null ? "" : goal, steps, sourceMessageId, now());
         log.info("plan_start plan_id={} steps={}", plan.planId(), steps.size());
         dispatchNext();
@@ -684,7 +718,7 @@ public final class Hub {
         }
         String doneSummary = doneNames.isEmpty() ? "" : "已做完：" + String.join("、", doneNames);
         int retriesLeft = PlanRun.MAX_RETRIES - plan.retries();
-        brainExec.execute(() -> {
+        runBrain(() -> {
             Brain.PlanDecision d;
             try {
                 d = brain.planFailure(goal, step.index(), size, step.command(), r, doneSummary, retriesLeft, ctx);
@@ -812,7 +846,7 @@ public final class Hub {
                 && plan.steps().get(0).command() != CommandName.REMEMBER_PLACE);
         if (worthRemembering) {
             memory.savePlan(new StoredPlan(plan.planId(), plan.goal(), plan.stepsJson(), plan.outcome().name().toLowerCase(),
-                    plan.startedAt(), plan.endedAt() > 0 ? plan.endedAt() : now(), plan.sourceMessageId()));
+                    plan.startedAt(), plan.endedAt() > 0 ? plan.endedAt() : now(), plan.sourceMessageId(), planSource));
         }
         pushPlan();
     }
@@ -852,6 +886,7 @@ public final class Hub {
                 pushPreferences(null);
             }
             case KEEPER_CONTROL -> keeperControl(ProtocolCodec.bodyAs(e, KeeperControl.class).action());
+            case IDLE_CONTROL -> setIdleEnabled(ProtocolCodec.bodyAs(e, IdleControl.class).enabled());
             default -> log.debug("ui sent {} ignored", e.type());
         }
     }
@@ -864,6 +899,38 @@ public final class Hub {
         String text = chat.text().strip();
         StoredMessage msg = memory.saveMessage("owner", text, null, null);
         String replyId = UUID.randomUUID().toString();
+        // 任务单 18：上一条是它的提议且在 2 分钟内，"好 / 不"就是对提议说的；主人说了话也解除安静模式
+        long nowTs = now();
+        Optional<IdlePolicy.Proposal> pending = idle.pendingWithin(nowTs);
+        boolean wasQuiet = idle.quiet();
+        idle.ownerSpoke(nowTs);
+        if (wasQuiet) {
+            log.info("idle_quiet_mode off");
+        }
+        if (pending.isPresent() && Shortcuts.isAccept(text)) {
+            IdlePolicy.Proposal pr = idle.accepted();
+            log.info("chat_in len={} msg_id={} shortcut=idle_accept", text.length(), msg.id());
+            memory.saveEvent("idle_accepted", null, msg.id(), obj("goal", pr.goal()));
+            PlanValidator.Validated v = PlanValidator.validate(makePlanArgs(pr.goal(), pr.steps()), knowledge.blockRules());
+            if (v.ok() && companionInWorld()) {
+                directReply(env.id(), msg, "好嘞，这就去。");
+                startPlan(pr.goal(), v.steps(), msg.id(), "idle");
+            } else {
+                directReply(env.id(), msg, "刚才那个现在做不了了（" + (companionInWorld() ? String.join("；", v.errors()) : "我不在游戏里") + "）。");
+            }
+            return;
+        }
+        if (pending.isPresent() && Shortcuts.isReject(text)) {
+            boolean quiet = idle.rejected(nowTs);
+            log.info("chat_in len={} msg_id={} shortcut=idle_reject", text.length(), msg.id());
+            log.info("idle_rejected goal_hash={} consecutive={}", IdlePolicy.goalKey(pending.get().goal()).hashCode(), idle.consecutiveRejects());
+            memory.saveEvent("idle_rejected", null, msg.id(), obj("goal", pending.get().goal()));
+            if (quiet) {
+                log.info("idle_quiet_mode on");
+            }
+            directReply(env.id(), msg, quiet ? "好，那我不提了，你想干什么跟我说。" : "好，那不提了。");
+            return;
+        }
         // 任务单 17：进度问句、"记住我们到 xx 了"、"记住这里是 xx"都不经过模型
         if (Shortcuts.isProgressQuestion(text)) {
             log.info("chat_in len={} msg_id={} shortcut=progress", text.length(), msg.id());
@@ -904,7 +971,7 @@ public final class Hub {
         }
         log.info("chat_in len={} msg_id={}", text.length(), msg.id());
         BrainContext ctx = context();
-        brainExec.execute(() -> {
+        runBrain(() -> {
             try {
                 ModelReply reply = brain.decide(text, ctx, chunk -> submit(() -> replyChunk(replyId, env.id(), chunk)));
                 submit(() -> onDecision(replyId, env.id(), msg, reply, 0, ""));
@@ -1016,7 +1083,7 @@ public final class Hub {
         String again = src.text() + "\n\n[系统] 你上次给的计划有问题：" + String.join("；", errors)
                 + "。只能用工具列表里的命令和参数，最多 " + PlanValidator.MAX_STEPS + " 步。请重新给一个计划；一个动作就能做完就直接调那个工具。";
         BrainContext ctx = context();
-        brainExec.execute(() -> {
+        runBrain(() -> {
             try {
                 ModelReply reply = brain.decide(again, ctx, chunk -> { });
                 submit(() -> onDecision(replyId, inReplyTo, src, reply, attempt, prefix));
@@ -1080,7 +1147,7 @@ public final class Hub {
         String source = commandSource.remove(r.commandId());
         String replyId = UUID.randomUUID().toString();
         BrainContext ctx = context();
-        brainExec.execute(() -> {
+        runBrain(() -> {
             String text;
             try {
                 ModelReply reply = brain.sayAfterResult(name, r, goal, ctx, chunk -> submit(() -> replyChunk(replyId, source, chunk)));
@@ -1255,6 +1322,139 @@ public final class Hub {
         if (now - lastStatusPush >= STATUS_INTERVAL_MS) {
             pushStatus(true);
         }
+        idleTick(now);
+    }
+
+    // ---------------- 空闲循环（任务单 18） ----------------
+
+    /** 每 500 ms 看一眼：开关开着、模型空着、没计划在跑、它在世界里、主人在服里、时间上到了，才让脑子想一想。 */
+    private void idleTick(long now) {
+        if (!idleEnabled || idleThinking || brainBusy > 0 || !idle.dueToThink(now)) {
+            return;
+        }
+        if (!companionInWorld() || (plan != null && plan.running())) {
+            return;
+        }
+        boolean ownerHere = (ownerOnline != null && ownerOnline)
+                || (lastSnapshot != null && lastSnapshot.owner() != null && lastSnapshot.owner().visible());
+        if (!ownerHere) {
+            return;
+        }
+        idle.thought(now);
+        idleThinking = true;
+        String situation = idleSituation(now);
+        BrainContext ctx = context();
+        runBrain(() -> {
+            try {
+                Brain.IdleDecision d = brain.idleThink(situation, ctx);
+                submit(() -> onIdleDecision(d));
+            } catch (ModelException ex) {
+                submit(() -> {
+                    idleThinking = false;
+                    log.warn("idle_think failed: {}", ex.getMessage());
+                });
+            }
+        });
+    }
+
+    /** 给"想一想"的一段话：时间段、天气、生命饥饿、主人距离、最近被拒的建议（阶段和地标已经在提示里）。 */
+    private String idleSituation(long now) {
+        Snapshot s = lastSnapshot;
+        StringBuilder sb = new StringBuilder();
+        sb.append("时间：").append(timeOfDayZh(s == null ? null : s.timeOfDay())).append("；");
+        if (s != null && s.isRaining() != null) {
+            sb.append("天气：").append(s.isRaining() ? "下雨" : "晴").append("；");
+        }
+        if (s != null && s.health() != null) {
+            sb.append("你的生命 ").append(Math.round(s.health())).append("/20");
+            if (s.food() != null) {
+                sb.append("，饥饿 ").append(s.food()).append("/20");
+            }
+            sb.append("；");
+        }
+        if (s != null && s.owner() != null && s.owner().visible() && s.owner().distance() != null) {
+            sb.append("主人在 ").append(Math.round(s.owner().distance())).append(" 格外；");
+        } else {
+            sb.append("主人在服里但你看不见他；");
+        }
+        List<String> rejected = idle.recentlyRejected(now);
+        if (!rejected.isEmpty()) {
+            sb.append("最近被拒过的建议：").append(String.join("、", rejected)).append("；");
+        }
+        return sb.toString();
+    }
+
+    /** 世界时间 0–24000：白天 / 傍晚 / 夜里 / 快天亮。 */
+    static String timeOfDayZh(Integer timeOfDay) {
+        if (timeOfDay == null) {
+            return "不知道几点";
+        }
+        int t = Math.floorMod(timeOfDay, 24000);
+        if (t < 12000) {
+            return t < 1000 ? "清晨" : t < 6000 ? "上午" : "下午";
+        }
+        if (t < 13000) {
+            return "傍晚";
+        }
+        return t < 23000 ? "夜里" : "快天亮";
+    }
+
+    private void onIdleDecision(Brain.IdleDecision d) {
+        idleThinking = false;
+        long now = now();
+        switch (d.action()) {
+            case Brain.IdleDecision.REMIND -> {
+                if (!idle.allowRemind(d.kind(), now)) {
+                    log.info("idle_tick action=remind kind={} suppressed=cooldown", d.kind());
+                    return;
+                }
+                sayProactive(d.say());
+                idle.reminded(now);
+                memory.saveEvent("idle_remind", null, null, obj("kind", d.kind()));
+                log.info("idle_tick action=remind kind={}", d.kind());
+            }
+            case Brain.IdleDecision.PROPOSE -> {
+                if (!idle.allowPropose(d.goal(), now)) {
+                    log.info("idle_tick action=propose suppressed=rejected_recently goal_hash={}", IdlePolicy.goalKey(d.goal()).hashCode());
+                    return;
+                }
+                PlanValidator.Validated v = PlanValidator.validate(makePlanArgs(d.goal(), d.steps()), knowledge.blockRules());
+                if (!v.ok()) {
+                    log.info("idle_invalid_plan errors={}", v.errors());
+                    return;
+                }
+                StoredMessage m = sayProactive(d.say());
+                idle.proposed(d.goal(), d.steps(), m.id(), now);
+                memory.saveEvent("idle_propose", null, m.id(), obj("goal", d.goal()));
+                log.info("idle_tick action=propose goal_hash={} steps={} msg_id={}", IdlePolicy.goalKey(d.goal()).hashCode(),
+                        v.steps().size(), m.id());
+            }
+            default -> log.info("idle_tick action=quiet");
+        }
+    }
+
+    private static JsonObject makePlanArgs(String goal, com.google.gson.JsonArray steps) {
+        JsonObject o = new JsonObject();
+        o.addProperty("goal", goal == null ? "" : goal);
+        o.add("steps", steps == null ? new com.google.gson.JsonArray() : steps);
+        return o;
+    }
+
+    /** 它主动说的一句（source=idle）：网页另画样式，messages 表 source 列记 idle。 */
+    private StoredMessage sayProactive(String text) {
+        String replyId = UUID.randomUUID().toString();
+        broadcast(envelope(MessageType.REPLY, Peer.UI, new Reply(replyId, null, text, false, null, "idle")));
+        StoredMessage saved = memory.saveMessage("companion", text, null, null, "idle");
+        broadcast(envelope(MessageType.REPLY, Peer.UI, new Reply(replyId, null, "", true, saved.id(), "idle")));
+        log.info("chat_out len={} idle=true msg_id={}", text.length(), saved.id());
+        return saved;
+    }
+
+    private void setIdleEnabled(boolean on) {
+        idleEnabled = on;
+        memory.setSetting("idle_enabled", on ? "on" : "off");
+        log.info("idle_enabled {}", on ? "on" : "off");
+        pushStatus(true);
     }
 
     public boolean companionInWorld() {
@@ -1287,7 +1487,7 @@ public final class Hub {
         Status.KeeperState ks = keeper == null ? Status.KeeperState.disconnected(auto, ownerOnline)
                 : new Status.KeeperState(true, keeperStatus == null ? null : keeperStatus.running(), keeperDesired,
                         keeperStatus == null ? null : keeperStatus.gaveUp(), auto, ownerOnline);
-        return new Status(companion, task, ks, new Status.ModelState(modelOk));
+        return new Status(companion, task, ks, new Status.ModelState(modelOk), idleEnabled);
     }
 
     private void pushStatus(boolean force) {
@@ -1416,7 +1616,7 @@ public final class Hub {
             return;
         }
         String dayStr = day.toString();
-        brainExec.execute(() -> {
+        runBrain(() -> {
             try {
                 String summary = brain.writeEpisode(dayStr, events, msgs);
                 if (!summary.isBlank()) {

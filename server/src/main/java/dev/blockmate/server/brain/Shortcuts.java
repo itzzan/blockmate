@@ -75,6 +75,23 @@ public final class Shortcuts {
             "进度", "进度呢", "什么进度", "现在什么进度", "我们什么进度", "我们现在什么进度", "走到哪了", "我们走到哪了",
             "现在在哪个阶段", "我们在哪个阶段", "在哪个阶段");
 
+    // ---------- 任务单 18：对提议的接受 / 拒绝（只在上一条是它的提议、2 分钟内才用；平时这些词仍是闲聊） ----------
+
+    private static final java.util.Set<String> ACCEPT = java.util.Set.of(
+            "好", "好的", "好啊", "好呀", "好嘞", "行", "行啊", "可以", "可以啊", "去吧", "去", "去做吧", "做吧", "走吧", "嗯", "嗯嗯", "ok", "好好",
+            "那就去吧", "去弄吧", "快去");
+    private static final java.util.Set<String> REJECT = java.util.Set.of(
+            "不", "不要", "不用", "不用了", "别", "别去", "别动", "等会", "等会儿", "等一下", "等等", "算了", "先不", "先不要", "先不用", "不行",
+            "不去", "别提了", "以后再说", "不急", "再说吧");
+
+    public static boolean isAccept(String text) {
+        return ACCEPT.contains(normalize(text).toLowerCase());
+    }
+
+    public static boolean isReject(String text) {
+        return REJECT.contains(normalize(text));
+    }
+
     /** "我们到哪了 / 现在到哪了 / 进度"：后台按通关地图直接回，不经过模型。 */
     public static boolean isProgressQuestion(String text) {
         return PROGRESS_QUESTIONS.contains(normalize(text));

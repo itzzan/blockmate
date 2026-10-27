@@ -78,6 +78,7 @@
 | keeper_control | ui → hub | "叫它上线 / 让它下线"（第 7 步） |
 | notice | hub → ui | 固定的中文提示（模型超时、伙伴不在游戏里等） |
 | plan | hub → ui | 任务单 9 加：一句话拆成的多步计划和进度，每步状态变化时整条重发，网页画进度条 |
+| idle_control | ui → hub | 任务单 18：网页的"主动说话"开关，body.enabled；存设置表 idle_enabled，status 里带 idle 回显 |
 
 ### 3.3 `/ws/keeper`：hub 与守护进程
 
@@ -347,6 +348,15 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
   - "我们到哪了 / 现在到哪了 / 到哪了 / 进度 / 什么进度 / 在哪个阶段"（Shortcuts.isProgressQuestion）：hub 直接回 `Progression.describe` 那句（`chat_in … shortcut=progress`、`chat_out … direct=true`），不经过模型；伙伴不在线时前面加"（它现在不在游戏里，背包按空的算，做过的阶段还在账上）"。别的问法交给模型，模型多一个无参工具 `report_progress`：hub 把同一句接在模型的引子后面（和"一次只做一件"的提示一样走 notes），模型自己说的阶段不算数。
   - 提示词三段：system 在 plan_examples 之后加「通关进度（后台算出来的事实…）：…」一行（变得少，不打断前缀缓存）；状态句末尾加「附近记得的地标：村庄（西北 60 格）、矿点（东 12 格）。」（最近 10 条，同维度按距离、别的维度排后面只写维度，不带原始坐标；`Landmarks.describe` / `nearest`）；"最近做过的任务"改成最近 5 个加今天结束的全部，当天的标"今天"。
   - "去村庄 / 去矿洞"：goto place 在 places 里查不到时按 `Landmarks.kindOf` 查最近的同种事实换成坐标（日志 `place_from_fact name= kind= fact_id=`），任务单 21 的带路也走这条。
+- 【任务单 18】空闲循环和主动提议（2026-10-27，guide-3 §1.3）：
+  - 开关：config `idle.enabled`（默认 true）/ `idle.interval_s`（默认 60）；网页上的"主动说话"开关存设置表 `idle_enabled`（on / off），有就盖过 config；reply 消息和 messages 表多一个 `source`（idle = 它主动说的，网页左边一条橙线加"它主动说的"），plans 表多一个 `source`（owner / idle）。
+  - 空闲判定（hub tick 每 500 ms 看一眼，`IdlePolicy` 管时间，别的看 hub 状态）：开关开着、模型空着（brainBusy=0，所有模型调用都经 runBrain 计数）、没计划在跑、它在世界里、主人在服里（RCON 查到或快照看得见）、离主人上一句 ≥ max(间隔, 15 s)、离它上次主动说话 ≥ 间隔、离上次想 ≥ 间隔、不在安静模式。
+  - "想一想"= `Brain.idleThink`：内部提示「[系统] 现在没人跟你说话，主人在服里。时间：夜里；天气：下雨；你的生命 x/20，饥饿 y/20；主人在 N 格外；最近被拒过的建议：…」（阶段和地标已在提示里），只带 propose(say, goal, steps) / remind(kind ∈ night / hungry / low_health / danger, say) / stay_quiet 三个工具，不流式；不调工具 = stay_quiet。
+  - 节流（hub，不靠模型）：remind 同 kind 5 分钟一次；propose 的 goal（去标点小写）被拒后 10 分钟不提；propose 的 steps 过 PlanValidator，不合法就不说（`idle_invalid_plan errors=`）；连续被拒 3 次进安静模式，直到主人主动说一句话。
+  - 接受 / 拒绝：固定短语（Shortcuts.isAccept：好 / 好的 / 去吧 / 行 / 可以 / 嗯 / ok …；isReject：不 / 不要 / 不用 / 等会 / 别 / 算了 / 先不 …），只在"上一条是它的提议且在 2 分钟内"时生效，平时这些词照旧交给模型。接受 → 直接回"好嘞，这就去。"并 `startPlan(goal, steps, msg_id, "idle")`（校验再过一遍，不在世界里就回做不了）；拒绝 → 回"好，那不提了。"（进安静模式时"好，那我不提了，你想干什么跟我说。"）。
+  - 事件：idle_propose（source_message_id=那条主动消息）/ idle_remind / idle_accepted / idle_rejected；日志 `idle_think action=`、`idle_tick action=propose|remind|quiet [suppressed=cooldown|rejected_recently]`、`idle_rejected goal_hash= consecutive=`、`idle_quiet_mode on|off`、`idle_enabled on|off`、`chat_out … idle=true`、`chat_in … shortcut=idle_accept|idle_reject`。
+  - 顺带（主人定）：blocks.yaml 可挖清单加钻石 / 金 / 红石 / 青金石 / 绿宝石矿（含深板岩变种，drops 和 needs_pickaxe 同步），黑曜石不加。
+
 
 
 ## 10. Gateway：和 Ollama 怎么说话
@@ -413,6 +423,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
 - 最近的任务（任务单 10）：表 `plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id)`，计划结束时写一行；给模型的 system 里带最近 5 个的"日期 目标：结局"。
+- 任务单 18：messages 加列 `source TEXT`（null / idle），plans 加列 `source TEXT`（owner / idle），老库启动时 PRAGMA table_info 查缺就 ALTER TABLE 补；settings 加 `idle_enabled`。
 - 进度和世界事实（任务单 17）：表 `progress(stage PRIMARY KEY, reached_ts, notes)`，一个阶段第一次做完写一行，不退回，notes=owner_said 是主人口头记的；表 `world_facts(id PRIMARY KEY, kind, name, dim, x, y, z, ts, source)`，kind ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal / mine_site / danger，source ∈ owner_said / seen / task_result，name 是主人叫它的名字；没坐标的事实放 settings（`fact:visited_nether` / `fact:visited_end`，值是时间戳）。家和床仍在 places。
 - 地点（任务单 13）：表 `places(name PRIMARY KEY, dim, x, y, z, ts)`，remember_place 写入（同名覆盖），goto place / go_home 查它；全部地点进 system 提示。hub 日志 `place_remembered name= dim=`、`place_resolved name= for=`、`place_unknown name= known=`。任务单 15：sleep 成功时 hub 把 detail.bed_pos 记成 bed，没记过 home 就同时记成 home（日志 `place_remembered name=bed … home_set=`）。
 - 最近 N 条对话：按 ts 倒序取最近 2N 条未删除的 messages，再经 HistoryWindow 做分块滑动：窗口在 N 到 2N 条之间，满 2N 条时一次砍回 N 条，而不是每轮掉一条，这样提示前缀只在每 N 条消息变一次（N 来自 config.history_n，默认 20）。网页 hello 回复里带的 history 仍是最近 N 条。
@@ -455,6 +466,9 @@ rcon:                           # 可选（手册 7.2 自动上下线）；整�
 auto_presence:
   poll_s: 30                    # 多久查一次谁在线
   offline_after_min: 10         # 主人离开多久后让伙伴下线
+idle:                    # 任务单 18：空闲循环
+  enabled: true          # 默认开；网页上的"主动说话"开关存在设置表里，盖过这里
+  interval_s: 60         # 没人说话时每隔这么多秒想一次要不要主动说点什么（每次一个模型调用）
 ```
 
 persona.md 由 Brain 每次请求前检查修改时间，变了就重新读，不用重启。

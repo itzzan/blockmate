@@ -32,6 +32,17 @@ mineable:
   - minecraft:deepslate_iron_ore
   - minecraft:copper_ore
   - minecraft:deepslate_copper_ore
+  # 任务单 18 加的矿（主人定）：钻石、金、红石、青金石、绿宝石；黑曜石故意不加（都在岩浆边，任务单 22 建传送门时再定）
+  - minecraft:diamond_ore
+  - minecraft:deepslate_diamond_ore
+  - minecraft:gold_ore
+  - minecraft:deepslate_gold_ore
+  - minecraft:redstone_ore
+  - minecraft:deepslate_redstone_ore
+  - minecraft:lapis_ore
+  - minecraft:deepslate_lapis_ore
+  - minecraft:emerald_ore
+  - minecraft:deepslate_emerald_ore
 
 # 挖掉之后背包里多的是什么（没写的 = 和方块同名）。模组按这个数"挖够了没有"；后台也用它把"挖 10 个圆石"换成"挖石头"。
 drops:
@@ -43,6 +54,16 @@ drops:
   minecraft:deepslate_iron_ore: minecraft:raw_iron
   minecraft:copper_ore: minecraft:raw_copper
   minecraft:deepslate_copper_ore: minecraft:raw_copper
+  minecraft:diamond_ore: minecraft:diamond
+  minecraft:deepslate_diamond_ore: minecraft:diamond
+  minecraft:gold_ore: minecraft:raw_gold
+  minecraft:deepslate_gold_ore: minecraft:raw_gold
+  minecraft:redstone_ore: minecraft:redstone
+  minecraft:deepslate_redstone_ore: minecraft:redstone
+  minecraft:lapis_ore: minecraft:lapis_lazuli
+  minecraft:deepslate_lapis_ore: minecraft:lapis_lazuli
+  minecraft:emerald_ore: minecraft:emerald
+  minecraft:deepslate_emerald_ore: minecraft:emerald
 
 # 徒手挖了不掉东西、必须拿镐的方块（真游戏预检 2026-10-27：没镐挖了 5 分钟石头一块圆石都没有）。
 # 模组开挖前查：清单里的方块而背包没有任何镐 → 回 no_materials（缺 pickaxe），不去白挖。
@@ -55,6 +76,16 @@ needs_pickaxe:
   - minecraft:deepslate_iron_ore
   - minecraft:copper_ore
   - minecraft:deepslate_copper_ore
+  - minecraft:diamond_ore          # 钻石、金、红石、绿宝石要铁镐，青金石要石镐；镐不够档次挖了也不掉，模组按"有没有镐"粗判
+  - minecraft:deepslate_diamond_ore
+  - minecraft:gold_ore
+  - minecraft:deepslate_gold_ore
+  - minecraft:redstone_ore
+  - minecraft:deepslate_redstone_ore
+  - minecraft:lapis_ore
+  - minecraft:deepslate_lapis_ore
+  - minecraft:emerald_ore
+  - minecraft:deepslate_emerald_ore
   - minecraft:furnace          # 收回自己放的熔炉也要镐
 
 never_touch:

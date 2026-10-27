@@ -9,7 +9,7 @@
   const el = {
     conn: $('conn'), online: $('online'), task: $('task'), health: $('health'), dim: $('dim'), inv: $('inv'),
     model: $('model'), keeper: $('keeper'), keeperStart: $('keeper-start'), keeperStop: $('keeper-stop'),
-    owner: $('owner'), auto: $('auto'), autoWrap: $('auto-wrap'),
+    owner: $('owner'), auto: $('auto'), autoWrap: $('auto-wrap'), idle: $('idle'),
     plan: $('plan'), planGoal: $('plan-goal'), planOutcome: $('plan-outcome'), planSteps: $('plan-steps'),
     stop: $('stop'), chat: $('chat'), prefs: $('prefs'), prefsList: $('prefs-list'), prefsCount: $('prefs-count'),
     composer: $('composer'), input: $('input'), send: $('send'),
@@ -49,15 +49,17 @@
   function scrollDown() { el.chat.scrollTop = el.chat.scrollHeight; }
 
   // ---------- 聊天记录 ----------
-  function bubble(role, text, ts) {
+  function bubble(role, text, ts, source) {
     const div = document.createElement('div');
     div.className = 'msg msg-' + role;
+    const idle = source === 'idle'; // 任务单 18：它主动说的
+    if (idle) div.classList.add('msg-idle');
     const body = document.createElement('span');
     body.className = 'body';
     body.textContent = text || '';
     const meta = document.createElement('span');
     meta.className = 'meta';
-    meta.textContent = (role === 'owner' ? '我' : role === 'companion' ? 'Blockmate' : '') + ' ' + timeText(ts);
+    meta.textContent = (idle ? '它主动说的 · ' : '') + (role === 'owner' ? '我' : role === 'companion' ? 'Blockmate' : '') + ' ' + timeText(ts);
     div.appendChild(body);
     div.appendChild(meta);
     el.chat.appendChild(div);
@@ -77,7 +79,7 @@
       if (!m.text) return;
       const role = m.role === 'owner' || m.role === 'owner_ingame' ? 'owner' : m.role === 'companion' ? 'companion' : 'system';
       if (role === 'system') return;
-      const b = bubble(role, m.text, m.ts);
+      const b = bubble(role, m.text, m.ts, m.source);
       if (m.role === 'owner_ingame') b.querySelector('.meta').textContent = '我（游戏里）' + ' ' + timeText(m.ts);
     });
   }
@@ -90,6 +92,7 @@
   const DIM_NAMES = { 'minecraft:overworld': '主世界', 'minecraft:the_nether': '下界', 'minecraft:the_end': '末地' };
   function renderStatus(s) {
     if (!s) return;
+    if (typeof s.idle === 'boolean') el.idle.checked = s.idle; // 任务单 18：主动说话开关
     const c = s.companion || {};
     if (!c.online) pill(el.online, '离线', 'pill-bad');
     else if (c.in_world === false) pill(el.online, '客户端在，未进服', 'pill-warn');
@@ -196,7 +199,7 @@
       case 'reply': {
         let node = replies.get(b.reply_id);
         if (!node) {
-          node = bubble('companion', '', env.ts);
+          node = bubble('companion', '', env.ts, b.source);
           node.classList.add('msg-pending');
           replies.set(b.reply_id, node);
         }
@@ -302,6 +305,11 @@
     const on = el.auto.checked;
     if (!send('keeper_control', { action: on ? 'auto_on' : 'auto_off' })) { el.auto.checked = !on; return; }
     system(on ? '已打开自动上下线：你进服它就来，你走 10 分钟它就下' : '已关闭自动上下线');
+  });
+  el.idle.addEventListener('change', () => {
+    const on = el.idle.checked;
+    if (!send('idle_control', { enabled: on })) { el.idle.checked = !on; return; }
+    system(on ? '已打开主动说话：没人说话时它每分钟想一次要不要提议或提醒' : '已关闭主动说话：它只答不问');
   });
 
   window.addEventListener('beforeunload', () => { closedByUs = true; if (ws) ws.close(); });

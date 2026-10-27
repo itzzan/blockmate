@@ -39,3 +39,10 @@ rcon:
 auto_presence:
   poll_s: 30
   offline_after_min: 10
+
+
+# 任务单 18：空闲循环——没人说话时每隔 interval_s 秒想一次要不要主动提议或提醒（每次一个模型调用）。
+# 网页上的"主动说话"开关存在数据库里，设过就盖过这里的 enabled。
+idle:
+  enabled: true
+  interval_s: 60

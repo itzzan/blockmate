@@ -17,6 +17,10 @@ public final class Tools {
     public static final String PLAN_DECISION = "plan_decision";
     /** 任务单 17：主人问进度时调用，后台算出一句准确的话让模型照着说。 */
     public static final String REPORT_PROGRESS = "report_progress";
+    /** 任务单 18：空闲循环"想一想"的三个工具。 */
+    public static final String PROPOSE = "propose";
+    public static final String REMIND = "remind";
+    public static final String STAY_QUIET = "stay_quiet";
 
     /** 动作工具：会变成发给模组的 command（第一阶段 7 个 + 任务单 11 加的 10 个单步工具）。 */
     public static final Set<String> ACTIONS = Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver",
@@ -28,7 +32,7 @@ public final class Tools {
             "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place", "use_furnace");
 
     private static final Set<String> REQUIRED_KEYS = Set.of("item", "count", "text", "block", "goal", "steps", "action",
-            "say", "name", "input");
+            "say", "name", "input", "kind");
 
     private Tools() {
     }
@@ -143,6 +147,32 @@ public final class Tools {
                 "action", action,
                 "say", prop("string", "先对主人说的一句话，像平时说话那样"),
                 "new_steps", steps)));
+        return a;
+    }
+
+    /** 任务单 18：空闲循环"想一想"只给这三个工具；提议的 steps 照旧过 PlanValidator。 */
+    public static JsonArray idle() {
+        JsonArray a = new JsonArray();
+        JsonObject steps = new JsonObject();
+        steps.addProperty("type", "array");
+        steps.addProperty("description", "怎么做：和 make_plan 的 steps 一样（每步 command / args / why，最多 8 步，只能用工具列表里的命令）");
+        JsonObject item = new JsonObject();
+        item.addProperty("type", "object");
+        steps.add("items", item);
+        a.add(fn(PROPOSE, "主动提议去做一件和当前阶段对得上的事。say 是对主人说的一句话（像平时说话，问一句要不要，不念步骤）", Map.of(
+                "say", prop("string", "对主人说的一句话"),
+                "goal", prop("string", "一句话目标，例如\"去挖 9 个铁矿\""),
+                "steps", steps)));
+        JsonObject kind = prop("string", "night = 天黑了该回家；hungry = 饿了；low_health = 血少；danger = 附近有危险（岩浆）");
+        JsonArray en = new JsonArray();
+        for (String k : List.of("night", "hungry", "low_health", "danger")) {
+            en.add(k);
+        }
+        kind.add("enum", en);
+        a.add(fn(REMIND, "提醒主人一件事（天黑、饿了、血少、危险），不提议做事", Map.of(
+                "kind", kind,
+                "say", prop("string", "对主人说的一句话"))));
+        a.add(fn(STAY_QUIET, "现在没什么值得说的，保持安静。大多数时候该选这个", Map.of()));
         return a;
     }
 

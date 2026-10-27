@@ -67,15 +67,17 @@ class KnowledgeTest {
         assertTrue(r.placeable().contains("minecraft:red_bed"));
         assertTrue(r.mineable().stream().noneMatch(s -> s.contains("chest")), "箱子绝不能在可挖清单里");
         assertTrue(r.mineable().stream().noneMatch(s -> s.contains("cobble")), "圆石不在可挖清单（任务单 13 决定：墙多半是它）");
-        assertEquals(19, r.mineable().size());
+        assertEquals(29, r.mineable().size(), "任务单 18 加了 10 种矿");
         assertEquals(18, r.placeable().size());
         assertEquals("minecraft:cobblestone", r.dropOf("minecraft:stone"));
         assertEquals("minecraft:raw_iron", r.dropOf("minecraft:deepslate_iron_ore"));
-        assertEquals(8, r.dropsOrEmpty().size());
+        assertEquals("minecraft:diamond", r.dropOf("minecraft:deepslate_diamond_ore"), "任务单 18 加的矿");
+        assertTrue(r.mineable().stream().noneMatch(s -> s.contains("obsidian")), "黑曜石故意不加（岩浆边）");
+        assertEquals(18, r.dropsOrEmpty().size());
         assertTrue(r.avoidFood().contains("minecraft:rotten_flesh"), "仓库 food.yaml 里腐肉是不该吃的");
         assertTrue(r.needsPickaxe().contains("minecraft:stone"), "石头要镐");
         assertTrue(r.needsPickaxe().contains("minecraft:furnace"));
-        assertEquals(9, r.needsPickaxe().size());
+        assertEquals(19, r.needsPickaxe().size());
         assertEquals(6, r.avoidFood().size());
     }
 }

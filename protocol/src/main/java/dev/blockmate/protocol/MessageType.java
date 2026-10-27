@@ -25,6 +25,8 @@ public enum MessageType {
     @SerializedName("keeper_control") KEEPER_CONTROL("keeper_control"),
     @SerializedName("notice") NOTICE("notice"),
     @SerializedName("plan") PLAN("plan"),
+    /** 任务单 18：网页的"主动说话"开关。 */
+    @SerializedName("idle_control") IDLE_CONTROL("idle_control"),
     // /ws/keeper
     @SerializedName("keeper_cmd") KEEPER_CMD("keeper_cmd"),
     @SerializedName("keeper_status") KEEPER_STATUS("keeper_status");

@@ -76,11 +76,40 @@ class HubIntegrationTest {
         /** 听到"弄 20 根木头"时给的 make_plan 参数；重问时给 makePlanArgsRetry（null = 回文字不给计划）。 */
         volatile JsonObject makePlanArgs;
         volatile JsonObject makePlanArgsRetry;
+        /** 任务单 18：空闲"想一想"时的答复：null = stay_quiet，propose / remind。 */
+        volatile String idleAction;
+        volatile String idleGoal = "去砍 8 根木头";
+        final java.util.concurrent.atomic.AtomicInteger idleRequests = new java.util.concurrent.atomic.AtomicInteger();
 
         @Override
         public ModelReply chat(ChatRequest req, Consumer<String> onChunk) {
             requests.add(req);
             String last = req.messages().get(req.messages().size() - 1).content();
+            if (last.contains("[系统] 现在没人跟你说话")) {
+                idleRequests.incrementAndGet();
+                JsonObject args = new JsonObject();
+                if ("remind".equals(idleAction)) {
+                    args.addProperty("kind", "night");
+                    args.addProperty("say", "天黑了，回家吧。");
+                    return new ModelReply("", List.of(new ToolCall("ir", "remind", args)), 1, 1, 1);
+                }
+                if ("propose".equals(idleAction)) {
+                    args.addProperty("say", "要不要我去砍点木头？");
+                    args.addProperty("goal", idleGoal);
+                    JsonArray steps = new JsonArray();
+                    JsonObject st = new JsonObject();
+                    st.addProperty("command", "mine");
+                    JsonObject sa = new JsonObject();
+                    sa.addProperty("block", "minecraft:oak_log");
+                    sa.addProperty("count", 8);
+                    st.add("args", sa);
+                    st.addProperty("why", "木头");
+                    steps.add(st);
+                    args.add("steps", steps);
+                    return new ModelReply("", List.of(new ToolCall("ip", "propose", args)), 1, 1, 1);
+                }
+                return new ModelReply("", List.of(new ToolCall("iq", "stay_quiet", new JsonObject())), 1, 1, 1);
+            }
             boolean decision = req.tools() != null && req.tools().size() > 1;
             if (decision) {
                 if (last.contains("弄 20 根木头")) {
@@ -222,9 +251,13 @@ class HubIntegrationTest {
         }
     }
 
+    /** 任务单 18：只有空闲循环的测试把它打开，别的测试不想让假模型多收请求。 */
+    private boolean idleOn;
+
     private Config config() {
         return Config.of(dir, Map.of("token", "t", "history_n", 20, "owner_name", "Steve",
-                "timeouts_s", Map.of("ack", 1, "come_here", 90)));
+                "timeouts_s", Map.of("ack", 1, "come_here", 90),
+                "idle", Map.of("enabled", idleOn, "interval_s", 2)));
     }
 
     private void startApp() throws Exception {
@@ -454,6 +487,41 @@ class HubIntegrationTest {
         ui.send(MessageType.CHAT, new Chat("进度"));
         assertTrue(ui.reply(5000).contains("「吃饱」"), "账本不退回");
         assertEquals(before, model.requests.size(), "这些都不经过模型");
+    }
+
+    /** 任务单 18：没人说话它主动提议一次（消息标 idle）；"不要"后 15 秒不插嘴、同一建议不再提；换个建议"好"就开始干，计划 source=idle；开关关掉。 */
+    @Test
+    void 任务单18_空闲提议_拒绝_接受_开关() throws Exception {
+        idleOn = true;
+        model.idleAction = "propose";
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        String p1 = ui.reply(10_000);
+        assertEquals("要不要我去砍点木头？", p1);
+        waitFor(() -> !app.memory().recentMessages(1).isEmpty() && "idle".equals(app.memory().recentMessages(1).get(0).source()),
+                3000, "主动说的消息 source=idle");
+        int thinks = model.idleRequests.get();
+        ui.send(MessageType.CHAT, new Chat("不要"));
+        assertEquals("好，那不提了。", ui.reply(5000));
+        Thread.sleep(4000);
+        assertEquals(thinks, model.idleRequests.get(), "主人刚说完 15 秒内不想");
+        assertTrue(app.memory().eventsBetween(0, Long.MAX_VALUE, java.util.Set.of()).stream().anyMatch(e -> "idle_rejected".equals(e.kind())));
+        // 15 秒过去后它再想：同一个目标被拒过不提，换个目标才提；主人点头就开始干
+        model.idleGoal = "去砍 4 根木头";
+        String p2 = ui.reply(25_000);
+        assertEquals("要不要我去砍点木头？", p2);
+        ui.send(MessageType.CHAT, new Chat("好"));
+        assertEquals("好嘞，这就去。", ui.reply(5000));
+        waitFor(() -> mockConsole.stream().anyMatch(l -> l.contains("收到 mine")), 5000, "mock 收到 mine");
+        waitFor(() -> !app.memory().recentPlans(1).isEmpty() && "idle".equals(app.memory().recentPlans(1).get(0).source()),
+                15_000, "计划记 source=idle");
+        ui.send(MessageType.IDLE_CONTROL, new dev.blockmate.protocol.IdleControl(false));
+        Status st = ui.statusWhere(x -> Boolean.FALSE.equals(x.idle()), 3000);
+        assertTrue(st != null);
+        assertEquals("off", app.memory().setting("idle_enabled").orElse(""));
     }
 
     private static String noticeContaining(UiClient ui, String text, long timeoutMs) throws InterruptedException {

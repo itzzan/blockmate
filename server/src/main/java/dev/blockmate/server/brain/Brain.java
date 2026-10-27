@@ -129,6 +129,59 @@ public final class Brain {
         return new PlanDecision(action, t.strip(), null);
     }
 
+    /** 任务单 18：空闲循环"想一想"的结果。action ∈ propose / remind / quiet。 */
+    public record IdleDecision(String action, String say, String goal, JsonArray steps, String kind) {
+        public static final String PROPOSE = "propose";
+        public static final String REMIND = "remind";
+        public static final String QUIET = "quiet";
+
+        public static IdleDecision quiet() {
+            return new IdleDecision(QUIET, "", null, null, null);
+        }
+    }
+
+    /**
+     * 任务单 18：没人说话时想一想要不要主动说点什么。situation 是 hub 拼好的一段：时间段、天气、生命饥饿、主人距离、最近被拒的建议。
+     * 只给 propose / remind / stay_quiet 三个工具；模型不调工具就当 stay_quiet。不流式。
+     */
+    public IdleDecision idleThink(String situation, BrainContext ctx) throws ModelException {
+        String prompt = "[系统] 现在没人跟你说话，主人在服里。" + situation
+                + "\n想一想要不要主动说点什么。大多数时候选 stay_quiet；只有当前阶段明显该去做一件事、或者天黑 / 饿了 / 血少 / 有危险时才开口。"
+                + "要提议就调 propose（say 像平时说话问一句要不要，goal 一句话目标，steps 和 make_plan 一样只用工具列表里的命令）；"
+                + "要提醒就调 remind。最近被拒过的建议别再提。";
+        List<ChatMessage> messages = PromptBuilder.build(persona.text(), knowledge.planExamples(), ctx, names, prompt, false);
+        ModelReply reply = client.chat(new ChatRequest(model, messages, Tools.idle()), chunk -> { });
+        IdleDecision d = parseIdle(reply);
+        log.info("idle_think action={} say_len={}", d.action(), d.say().length());
+        return d;
+    }
+
+    static IdleDecision parseIdle(ModelReply reply) {
+        for (ToolCall tc : reply.toolCalls()) {
+            JsonObject a = tc.arguments() == null ? new JsonObject() : tc.arguments();
+            String say = a.has("say") && !a.get("say").isJsonNull() ? a.get("say").getAsString().strip() : "";
+            if (Tools.PROPOSE.equals(tc.name())) {
+                String goal = a.has("goal") && !a.get("goal").isJsonNull() ? a.get("goal").getAsString().strip() : "";
+                JsonArray steps = a.has("steps") && a.get("steps").isJsonArray() ? a.getAsJsonArray("steps") : null;
+                if (say.isEmpty() || goal.isEmpty() || steps == null || steps.isEmpty()) {
+                    return IdleDecision.quiet();
+                }
+                return new IdleDecision(IdleDecision.PROPOSE, say, goal, steps, null);
+            }
+            if (Tools.REMIND.equals(tc.name())) {
+                String kind = a.has("kind") && !a.get("kind").isJsonNull() ? a.get("kind").getAsString().strip().toLowerCase() : "";
+                if (say.isEmpty() || !List.of("night", "hungry", "low_health", "danger").contains(kind)) {
+                    return IdleDecision.quiet();
+                }
+                return new IdleDecision(IdleDecision.REMIND, say, null, null, kind);
+            }
+            if (Tools.STAY_QUIET.equals(tc.name())) {
+                return IdleDecision.quiet();
+            }
+        }
+        return IdleDecision.quiet();
+    }
+
     /** 把一天的事概括成一段日记（手册 5.5 第 5 条）。不带工具。 */
     public String writeEpisode(String day, List<StoredEvent> events, List<StoredMessage> messages)
             throws ModelException {

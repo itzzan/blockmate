@@ -66,4 +66,18 @@ class ShortcutsTest {
         assertTrue(Shortcuts.progressClaim("记住我们到哪了").isEmpty() || Shortcuts.progressClaim("记住我们到哪了").isPresent(),
                 "这句不常见，交给调用方按阶段名查，查不到就说没听懂");
     }
+
+    @Test
+    void 任务单18_接受和拒绝() {
+        assertTrue(Shortcuts.isAccept("好"));
+        assertTrue(Shortcuts.isAccept("好的！"));
+        assertTrue(Shortcuts.isAccept("去吧"));
+        assertTrue(Shortcuts.isAccept("OK"));
+        assertTrue(!Shortcuts.isAccept("好像不太对"));
+        assertTrue(Shortcuts.isReject("不要"));
+        assertTrue(Shortcuts.isReject("等会儿。"));
+        assertTrue(Shortcuts.isReject("算了"));
+        assertTrue(!Shortcuts.isReject("不知道"));
+        assertTrue(!Shortcuts.isAccept("") && !Shortcuts.isReject(null));
+    }
 }
