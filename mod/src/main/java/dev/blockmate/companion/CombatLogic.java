@@ -11,8 +11,20 @@ public final class CombatLogic {
     /** 一个生物对我们来说是什么。 */
     public enum Kind { HOSTILE, FLEE, NEVER, IGNORE }
 
-    /** 这一 tick 该做什么（按优先级从高到低判）。 */
-    public enum Action { NONE, FLEE, GIVE_UP, EAT_RUN, SHIELD_BACK, ATTACK, APPROACH }
+    /** 这一 tick 该做什么（按优先级从高到低判）。任务单 20 加 GUARD（顶在主人前面）和 SHOOT（用弓）。 */
+    public enum Action { NONE, FLEE, GIVE_UP, EAT_RUN, SHIELD_BACK, GUARD, ATTACK, SHOOT, APPROACH }
+
+    /** 任务单 20：保护主人——以主人为中心 8 格找怪；"打那只"16 格内找、目标跑出 24 格算打完、60 秒超时；主人血 ≤ 8 顶在前面；6 格外用弓。 */
+    public static final double PROTECT_RADIUS = 8.0;
+    public static final double HUNT_RADIUS = 16.0;
+    public static final double HUNT_LOSE_RADIUS = 24.0;
+    public static final int HUNT_TIMEOUT_TICKS = 1200;
+    public static final int HUNT_SEARCH_GRACE_TICKS = 40;
+    public static final float OWNER_LOW_HEALTH = 8f;
+    public static final double BOW_MIN_DISTANCE = 6.0;
+    public static final int BOW_CHARGE_TICKS = 20;
+    /** 主人离那只怪 3 格内又在挥手 = 主人正在打它，不抢。 */
+    public static final double OWNER_FIGHTING_DISTANCE = 3.0;
 
     /** 8 格内的怪才算威胁；3 格内（或先动手）才开打；苦力怕 3 格内就躲、躲到 6 格外。 */
     public static final double ENGAGE_RADIUS = 8.0;
@@ -84,7 +96,15 @@ public final class CombatLogic {
      * @param ateThisFight    这场架已经吃过一口了
      */
     public record Situation(float health, boolean shieldInOffhand, boolean hasFood, double threatDist, double fleeDist,
-                            int fightTicks, float damageLast10s, int ticksSinceShield, boolean ateThisFight) {
+                            int fightTicks, float damageLast10s, int ticksSinceShield, boolean ateThisFight,
+                            boolean hasBowAndArrow, boolean canSeeTarget, boolean protecting, boolean ownerLow) {
+
+        /** 任务单 19 的写法（没有弓、没有保护）。 */
+        public Situation(float health, boolean shieldInOffhand, boolean hasFood, double threatDist, double fleeDist,
+                         int fightTicks, float damageLast10s, int ticksSinceShield, boolean ateThisFight) {
+            this(health, shieldInOffhand, hasFood, threatDist, fleeDist, fightTicks, damageLast10s, ticksSinceShield, ateThisFight,
+                    false, true, false, false);
+        }
     }
 
     public static Action decide(Situation s) {
@@ -103,7 +123,49 @@ public final class CombatLogic {
         if (s.health() <= SHIELD_HEALTH && s.shieldInOffhand() && s.ticksSinceShield() > SHIELD_COOLDOWN_TICKS) {
             return Action.SHIELD_BACK;
         }
-        return s.threatDist() <= REACH ? Action.ATTACK : Action.APPROACH;
+        if (s.protecting() && s.ownerLow() && s.threatDist() > REACH) {
+            return Action.GUARD;
+        }
+        if (s.threatDist() <= REACH) {
+            return Action.ATTACK;
+        }
+        if (s.hasBowAndArrow() && s.canSeeTarget() && s.threatDist() >= BOW_MIN_DISTANCE) {
+            return Action.SHOOT;
+        }
+        return Action.APPROACH;
+    }
+
+    /** 主人正在打的那只不抢：主人离它 3 格内、在挥手，而且主人血不低。 */
+    public static boolean ownerIsFighting(double ownerDistToMob, boolean ownerSwinging, float ownerHealth) {
+        return ownerDistToMob <= OWNER_FIGHTING_DISTANCE && ownerSwinging && ownerHealth > OWNER_LOW_HEALTH;
+    }
+
+    /**
+     * 保护时站的位置：主人和怪连线上离主人 fraction 处（拦截用 0.4，顶在前面用 0.15）。
+     * 返回 {x, y, z}；怪就在主人身上时返回主人位置。
+     */
+    public static double[] interceptPoint(double ox, double oy, double oz, double tx, double ty, double tz, double fraction) {
+        double dx = tx - ox;
+        double dy = ty - oy;
+        double dz = tz - oz;
+        if (Math.hypot(dx, dz) < 0.5) {
+            return new double[]{ox, oy, oz};
+        }
+        return new double[]{ox + dx * fraction, oy + dy * fraction, oz + dz * fraction};
+    }
+
+    /** "打那只 xx"：种类对得上（都补 minecraft: 前缀比）。 */
+    public static boolean huntMatches(String typeId, String kind) {
+        return !Rules.normalize(kind).isEmpty() && Rules.normalize(typeId).equals(Rules.normalize(kind));
+    }
+
+    /** 弓：物品 id 是 bow；箭：任何 *arrow（普通、光灵、药水箭）。 */
+    public static boolean isBow(String itemId) {
+        return Rules.normalize(itemId).equals("minecraft:bow");
+    }
+
+    public static boolean isArrow(String itemId) {
+        return Rules.normalize(itemId).endsWith("arrow");
     }
 
     /** 武器好坏：剑按档次，斧比同档的剑差一点，别的 0。 */

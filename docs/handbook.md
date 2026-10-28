@@ -218,6 +218,7 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | go_home | — | 等于 goto place=home；没记过回 no_place_known。【任务单 13】hub 换成坐标后以 goto 下发，计划里仍显示 go_home |
 | remember_place | name，pos（可选，默认当前位置） | 记地点。【任务单 13 改】hub 自己完成、不下发模组：拿最新 snapshot 的 pos / dim 写进 places 表（同名覆盖），合成 result ok（detail {name, pos}）；没有快照（不在世界里）合成 failed no_place_known。名字整理：家 / home / 家里 换成 home，床 / bed 换成 bed。模组不存地点 |
 | use_furnace | input，fuel，count（默认全部） | 用 8 格内的熔炉把 input 烧完并取出；没熔炉回 item_not_found，没燃料回 no_materials。【任务单 14 第二批】背包没 input 回 no_materials（missing input）；fuel 没给按煤、木炭、煤块、木板、原木挑，都没有回 no_materials（missing minecraft:coal）；8 格内没熔炉但背包有就临时放一个（熔炉只在这一步允许放，不进 placeable），用完挖回来（里面剩的一起掉出来捡走）；走到 2 格内打开熔炉菜单（0 原料 1 燃料 2 成品），count 没给就把原料和燃料各 shift 一叠进去，给了就拿起原料叠右键逐个放 count 次；每 2 秒看成品格，有就 shift 取出并发 progress（累计 smelted）；原料格空且成品取完回 ok；原料还有、炉子灭了超过 5 秒且燃料格空回 no_materials 带 smelted；整单 300 秒超时 |
+| fight | kind | 【任务单 20】主人明确说"打那只 xx"才有，固定短语不做（要认种类，交给模型）。hub 先查 kind 在 mobs.yaml 的 hostile 上，不在直接合成 not_allowed 不下发；模组再查一遍（名单外或 combat.mode=off 回 not_allowed）。模组 16 格内找这一种（2 秒没找到回 item_not_found），用任务单 19 的打法打，这一种都死了或跑出 24 格回 ok（detail killed）；60 秒超时回 timeout 带 killed；打不过放弃回 stuck 带 killed。打架期间 fight 任务本身不暂停（它就是那场架）；被新命令换掉就不再找这一种，已经打起来的按自保规则打完 |
 
 ### 7.2 ack
 
@@ -365,6 +366,14 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
   - 模组 `Combat` 每 tick 跑在执行器前：8 格内按实体种类 id 对名单，"被打了"= 受伤动画期间的最后伤害来源是怪；被打或怪到 3 格内开打，苦力怕 3 格内开躲（躲到 6 格外）。规则写死（`CombatLogic.decide`，按优先级）：苦力怕先躲 → 打了 30 秒或 10 秒掉 8 血放弃（发 danger overwhelmed，往主人跑，主人不在往出生点，最多 10 秒）→ 血 ≤ 6 有吃的吃一口再跑（一场只吃一次，食物换到快捷栏第 7 格）→ 血 ≤ 8 副手有盾举盾后退 3 格 2 秒（5 秒内不重复）→ 够得着（3.2 格）就挥（攻击冷却 ≥ 0.9，先换最好的剑到第 8 格，每次挥击前再过一遍名单，日志 `combat target= allowed=`）→ 够不着用 Baritone 靠近。8 格内 3 秒没怪算打完，发 combat 事件（killed / fled / gave_up / stopped / died）。开关 off 时整段不跑。
   - 暂停恢复：打架期间执行器不 tick，当前任务留着（TaskInfo state=paused，发一条 progress "combat"，松使用键、关菜单、停 Baritone）；打完跟随 / 挖 / 捡 / 走到 把 Baritone 的活重新派下去，合成 / 放 / 熔炉 / 吃 / 睡这类菜单任务接不上按 stuck 结束（计划逻辑决定重试或跳过），内部任务丢掉。"停"命令最高优先：先收手再停。
   - 日志（模组）：`combat start target= flee= health=`、`combat target= allowed=`、`combat shield up`、`combat eating`、`combat overwhelmed`、`combat end target= outcome= ms= damage= killed=`、`task X paused for combat` / `resumed after combat`。
+- 【任务单 20】保护主人与协同（2026-10-28，guide-3 §2.2）：
+  - 保护（combat.mode=protect，任务单 20 起默认）：感知加一圈"以主人为中心 8 格"，怪进圈就开打（哪怕离它自己远），目标点是主人和怪连线上离主人四成处（`CombatLogic.interceptPoint`），到了就打；主人血 ≤ 8 时不追打，站到连线上离主人 15% 处举盾（GUARD），怪到跟前照样挥。"主人正在打的不抢"：主人离那只怪 3 格内又在挥手（`owner.swinging`）且血 > 8 就跳过它。
+  - 弓：背包有 bow 和任何 *arrow、目标 ≥ 6 格且看得见（`hasLineOfSight`）→ SHOOT：换到弓、按住使用键（keyUse）蓄力 ≥ 20 tick、瞄身体中心（0.6 高）松开，10 tick 冷却；目标进 6 格或看不见就换回剑。弹道提前量【待定】。
+  - 决策优先级（`CombatLogic.decide`）：躲苦力怕 → 放弃 → 吃 → 举盾后退 → GUARD（保护且主人血少且怪不在手边）→ 挥（≤ 3.2 格）→ 射（≥ 6 格有弓箭看得见）→ 靠近。
+  - 使用键：盾、弓、吃都靠 `mc.options.keyUse` 按住（vanilla 每帧看键没按着就 releaseUsingItem，任务单 19 只调 useItem 的写法其实下一帧就松了，这一张顺手修了）；执行器暂停时 Combat 按着键就不松（`holdingUseKey`）。主手拿着弓时先换回剑再举盾（使用键会先拉弓）。
+  - fight 命令：见 §7.1；hub 的 PlanValidator 多一个带 MobRules 的入口（fight 的 kind 要在 hostile 上，kind 补 minecraft: 前缀），dispatchNext 对 fight 再查一遍名单；TaskSlot 超时 `timeouts_s.fight`（默认 60）；工具 22 个；结果描述"成功，打死了 N 只"；网页任务名"打架"。
+  - 日志（模组）：`hunt X start` / `hunt X -> DONE_OK|NOT_FOUND|TIMEOUT|GAVE_UP killed=`、`combat start … protect= hunt=`、`combat guarding owner`、`combat bow out`、`combat shot at X (N ticks)`、`combat end … protect=`；hub `fight_not_allowed kind=`。
+
 
 
 
@@ -481,7 +490,7 @@ idle:                    # 任务单 18：空闲循环
   enabled: true          # 默认开；网页上的"主动说话"开关存在设置表里，盖过这里
   interval_s: 60         # 没人说话时每隔这么多秒想一次要不要主动说点什么（每次一个模型调用）
 combat:                  # 任务单 19：战斗开关
-  mode: defend           # off 不打只跑 / defend 只自保 / protect 保护主人（任务单 20）；网页下拉存设置表，盖过这里
+  mode: protect          # off 不打只跑 / defend 只自保 / protect 保护主人（任务单 20 起默认）；网页下拉存设置表，盖过这里
 ```
 
 persona.md 由 Brain 每次请求前检查修改时间，变了就重新读，不用重启。
@@ -524,6 +533,7 @@ keeper_status：
 - `preference_action`：`{"id": "…", "action": "confirm" | "ignore"}`。
 - `keeper_control`：`{"action": "start" | "stop" | "auto_on" | "auto_off"}`。
 - `plan`（hub → ui，任务单 10）：`{"plan_id", "goal", "steps": [{"index", "command", "args", "state"}], "current"}`，每步变化整条重发；网页在聊天区上方画成一排步骤标签，结束 30 秒后隐藏。
+  fight: 60              # 任务单 20：fight 命令 60 秒
 - `notice`：`{"text": "我现在不在游戏里", "level": "info" | "warn"}`。
 
 网页的 token 存在 localStorage（键 `companion_token`），断线按 1/2/4/…/15 秒退避重连，状态条显示"重连中"。

@@ -1,6 +1,7 @@
 package dev.blockmate.companion;
 
 import baritone.api.IBaritone;
+import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
 import baritone.api.pathing.goals.GoalXZ;
 import dev.blockmate.protocol.Event;
@@ -26,13 +27,18 @@ import java.util.Optional;
 import java.util.function.BiConsumer;
 
 /**
- * 自保（任务单 19）：每 tick 跑在执行器之前。感知 8 格内名单上的怪，被打或怪到 3 格内就开打；
- * 血少举盾后退、吃一口往主人跑；苦力怕只躲；30 秒打不完或血掉得太快就放弃往主人跑。
- * 打架期间执行器暂停（它只看 {@link #active()}），打完发 combat 事件。全部在游戏线程上。
+ * 自保与保护（任务单 19 / 20）：每 tick 跑在执行器之前。
+ * 19：8 格内名单上的怪，被打或到 3 格内就开打；血少举盾后退、吃一口往主人跑；苦力怕只躲；30 秒打不完放弃。
+ * 20：保护模式以主人为中心 8 格找怪，走到主人和怪中间拦下；主人血少顶在前面举盾；主人正在打的不抢；
+ *     "打那只 xx"（hunt）16 格内找这一种、跑出 24 格算打完、60 秒超时；有弓箭且目标 6 格外用弓。
+ * 打架期间执行器暂停（它只看 {@link #active()}；fight 任务除外），打完发 combat 事件。全部在游戏线程上。
  */
 public final class Combat {
 
-    private enum Phase { FIGHT, FLEE, SHIELD_BACK, EAT, RUN }
+    private enum Phase { FIGHT, FLEE, SHIELD_BACK, EAT, RUN, GUARD, SHOOT }
+
+    /** "打那只"的进展，执行器每 tick 看。 */
+    public enum HuntState { NONE, SEARCHING, FIGHTING, DONE_OK, NOT_FOUND, TIMEOUT, GAVE_UP }
 
     /** 武器放快捷栏第 8 格（下标 7），食物第 7 格（下标 6）；执行器用第 9 格放方块，不冲突。 */
     static final int WEAPON_HOTBAR_SLOT = 7;
@@ -41,6 +47,8 @@ public final class Combat {
     private static final int RUN_MAX_TICKS = 200;
     private static final int EAT_TIMEOUT_TICKS = 120;
     private static final int HEALTH_WINDOW_TICKS = 200;
+    private static final int SHOT_COOLDOWN_TICKS = 10;
+    private static final double SCAN_RADIUS = 24.0;
 
     private final BiConsumer<MessageType, Object> send;
 
@@ -54,7 +62,7 @@ public final class Combat {
     private int killed;
     private float lastHealth = -1;
     private float damageTaken;
-    private boolean shieldUp;
+    private boolean useKeyHeld;
     private boolean eating;
     private boolean ateThisFight;
     private int eatStart;
@@ -62,9 +70,17 @@ public final class Combat {
     private String eatItem;
     private boolean gaveUp;
     private boolean weaponChecked;
+    private boolean protecting;
+    private int chargeStart;
+    private int shotCooldownUntil;
     private LivingEntity target;
     private String targetKind = "";
     private final ArrayDeque<int[]> healthLog = new ArrayDeque<>(); // {tick, damage x100}
+    // 任务单 20："打那只"
+    private String huntKind;
+    private int huntStart;
+    private int huntKilled;
+    private HuntState huntState = HuntState.NONE;
 
     public Combat(BiConsumer<MessageType, Object> send) {
         this.send = send;
@@ -72,6 +88,45 @@ public final class Combat {
 
     public boolean active() {
         return active;
+    }
+
+    /** 盾或弓正按着使用键：执行器暂停时别把它松掉。 */
+    public boolean holdingUseKey() {
+        return useKeyHeld;
+    }
+
+    // ---------------- "打那只"（任务单 20） ----------------
+
+    public void hunt(String kind, int tick) {
+        huntKind = Rules.normalize(kind);
+        huntStart = tick;
+        huntKilled = 0;
+        huntState = HuntState.SEARCHING;
+        CompanionMod.LOG.info(CompanionMod.TAG + "hunt {} start", huntKind);
+    }
+
+    public HuntState huntState() {
+        return huntState;
+    }
+
+    public int huntKilled() {
+        return huntKilled;
+    }
+
+    /** 任务被换掉 / 结束：不再找这一种；已经打起来的架按自保规则打完。 */
+    public void cancelHunt() {
+        huntKind = null;
+        huntState = HuntState.NONE;
+    }
+
+    private boolean hunting() {
+        return huntKind != null && (huntState == HuntState.SEARCHING || huntState == HuntState.FIGHTING);
+    }
+
+    private void finishHunt(HuntState how) {
+        CompanionMod.LOG.info(CompanionMod.TAG + "hunt {} -> {} killed={}", huntKind, how, huntKilled);
+        huntState = how;
+        huntKind = null;
     }
 
     /** "停"命令或开关关掉：收手，不发 danger，发一条 combat(stopped)。 */
@@ -82,7 +137,7 @@ public final class Combat {
         }
     }
 
-    /** 每 tick 调一次；返回 true 时执行器这一 tick 不动（任务暂停）。 */
+    /** 每 tick 调一次；返回 true 时执行器这一 tick 不动（任务暂停；fight 任务例外，由执行器自己判断）。 */
     public boolean tick(Minecraft mc, LocalPlayer me, Rules rules, int tick) {
         if (mc.level == null || me == null) {
             return false;
@@ -90,6 +145,9 @@ public final class Combat {
         if (me.isDeadOrDying()) {
             if (active) {
                 end(mc, me, tick, "died");
+            }
+            if (hunting()) {
+                finishHunt(HuntState.GAVE_UP);
             }
             lastHealth = -1;
             return false;
@@ -99,61 +157,114 @@ public final class Combat {
             if (active) {
                 end(mc, me, tick, "stopped");
             }
+            if (hunting()) {
+                finishHunt(HuntState.GAVE_UP);
+            }
             return false;
         }
         // ---- 感知 ----
         boolean night = Survival.isNight(mc.level.getDayTime() % 24000);
         Entity attacker = lastAttacker(me);
+        Player owner = findOwner(mc, me);
+        boolean protectMode = "protect".equals(rules.combatMode()) && owner != null;
+        boolean ownerLow = owner != null && owner.getHealth() <= CombatLogic.OWNER_LOW_HEALTH;
         LivingEntity nearestHostile = null;
         double hostileDist = Double.NaN;
         LivingEntity nearestFlee = null;
         double fleeDist = Double.NaN;
+        LivingEntity ownerThreat = null;
+        double ownerThreatDist = Double.NaN;
+        LivingEntity huntTarget = null;
+        double huntDist = Double.NaN;
         boolean attackedByHostile = false;
-        for (LivingEntity e : mc.level.getEntitiesOfClass(LivingEntity.class, me.getBoundingBox().inflate(CombatLogic.ENGAGE_RADIUS))) {
+        double huntRadius = huntState == HuntState.FIGHTING ? CombatLogic.HUNT_LOSE_RADIUS : CombatLogic.HUNT_RADIUS;
+        for (LivingEntity e : mc.level.getEntitiesOfClass(LivingEntity.class, me.getBoundingBox().inflate(SCAN_RADIUS))) {
             if (e == me || !e.isAlive()) {
                 continue;
             }
             double d = me.distanceTo(e);
-            if (d > CombatLogic.ENGAGE_RADIUS) {
-                continue;
-            }
             boolean attackedMe = attacker == e;
-            CombatLogic.Kind kind = CombatLogic.classify(typeId(e), night, attackedMe, rules);
+            String typeId = typeId(e);
+            CombatLogic.Kind kind = CombatLogic.classify(typeId, night, attackedMe, rules);
             if (kind == CombatLogic.Kind.HOSTILE) {
-                if (attackedMe) {
-                    attackedByHostile = true;
+                if (hunting() && d <= huntRadius && CombatLogic.huntMatches(typeId, huntKind) && (huntTarget == null || d < huntDist)) {
+                    huntTarget = e;
+                    huntDist = d;
                 }
-                if (nearestHostile == null || d < hostileDist) {
-                    nearestHostile = e;
-                    hostileDist = d;
+                if (d <= CombatLogic.ENGAGE_RADIUS) {
+                    if (attackedMe) {
+                        attackedByHostile = true;
+                    }
+                    if (nearestHostile == null || d < hostileDist) {
+                        nearestHostile = e;
+                        hostileDist = d;
+                    }
                 }
-            } else if (kind == CombatLogic.Kind.FLEE) {
+                if (protectMode) {
+                    double dOwner = owner.distanceTo(e);
+                    if (dOwner <= CombatLogic.PROTECT_RADIUS
+                            && !CombatLogic.ownerIsFighting(dOwner, owner.swinging, owner.getHealth())
+                            && (ownerThreat == null || dOwner < ownerThreatDist)) {
+                        ownerThreat = e;
+                        ownerThreatDist = dOwner;
+                    }
+                }
+            } else if (kind == CombatLogic.Kind.FLEE && d <= CombatLogic.ENGAGE_RADIUS) {
                 if (nearestFlee == null || d < fleeDist) {
                     nearestFlee = e;
                     fleeDist = d;
                 }
             }
         }
+        // ---- "打那只"的找与丢 ----
+        if (huntState == HuntState.SEARCHING) {
+            if (huntTarget != null) {
+                huntState = HuntState.FIGHTING;
+            } else if (tick - huntStart > CombatLogic.HUNT_SEARCH_GRACE_TICKS) {
+                finishHunt(HuntState.NOT_FOUND);
+            }
+        }
+        if (huntState == HuntState.FIGHTING && tick - huntStart > CombatLogic.HUNT_TIMEOUT_TICKS) {
+            finishHunt(HuntState.TIMEOUT);
+        }
         // ---- 开打 / 开躲 ----
         if (!active) {
             boolean flee = nearestFlee != null && fleeDist <= CombatLogic.FLEE_TRIGGER;
             boolean fight = nearestHostile != null && CombatLogic.shouldEngage(hostileDist, attackedByHostile);
-            if (!flee && !fight) {
+            if (flee) {
+                begin(tick, nearestFlee, true, false);
+            } else if (huntState == HuntState.FIGHTING && huntTarget != null) {
+                begin(tick, huntTarget, false, false);
+            } else if (fight) {
+                begin(tick, nearestHostile, false, false);
+            } else if (ownerThreat != null) {
+                begin(tick, ownerThreat, false, true);
+            } else {
                 return false;
             }
-            begin(tick, fight ? nearestHostile : nearestFlee, flee && !fight);
         }
-        if (nearestHostile != null || (nearestFlee != null && fleeDist <= CombatLogic.FLEE_DISTANCE)) {
+        boolean threatAround = nearestHostile != null || (nearestFlee != null && fleeDist <= CombatLogic.FLEE_DISTANCE)
+                || (protecting && ownerThreat != null) || (hunting() && huntTarget != null);
+        if (threatAround) {
             lastThreatTick = tick;
         }
         if (target != null && !target.isAlive()) {
             killed++;
+            if (hunting() && CombatLogic.huntMatches(targetKind, huntKind)) {
+                huntKilled++;
+            }
             CompanionMod.LOG.info(CompanionMod.TAG + "combat target {} down", targetKind);
             target = null;
         }
-        if (target == null && nearestHostile != null) {
-            target = nearestHostile;
-            targetKind = typeId(nearestHostile);
+        if (target == null) {
+            LivingEntity next = hunting() ? huntTarget : protecting && ownerThreat != null ? ownerThreat : nearestHostile;
+            if (next != null) {
+                target = next;
+                targetKind = typeId(next);
+            }
+        }
+        if (huntState == HuntState.FIGHTING && huntTarget == null) {
+            finishHunt(HuntState.DONE_OK); // 这一种都死了或跑出 24 格
         }
         // ---- 打完了没 ----
         boolean calm = tick - lastThreatTick >= CombatLogic.CALM_TICKS;
@@ -184,17 +295,24 @@ public final class Combat {
             }
         }
         double threatDist = target == null ? Double.NaN : me.distanceTo(target);
+        boolean bowAndArrow = hasBow(me) && hasArrow(me);
+        boolean canSee = target != null && me.hasLineOfSight(target);
         CombatLogic.Situation s = new CombatLogic.Situation(me.getHealth(), me.getOffhandItem().getItem() instanceof ShieldItem,
                 !Executor.foods(me).isEmpty(), threatDist, fleeDist, tick - startTick, damageLast10s(tick), tick - lastShieldTick,
-                ateThisFight);
+                ateThisFight, bowAndArrow, canSee, protecting, ownerLow);
         CombatLogic.Action action = CombatLogic.decide(s);
+        if (action != CombatLogic.Action.SHOOT && phase == Phase.SHOOT) {
+            stopCharging(mc, me);
+        }
         switch (action) {
             case FLEE -> fleeFrom(mc, me, nearestFlee, tick);
             case GIVE_UP -> giveUp(mc, me, tick);
             case EAT_RUN -> beginEat(mc, me, rules, tick);
             case SHIELD_BACK -> shieldBack(mc, me, tick);
+            case GUARD -> guard(mc, me, owner, tick);
             case ATTACK -> attack(mc, me, rules, night, attacker, tick);
-            case APPROACH -> approach(mc, me, tick);
+            case SHOOT -> shoot(mc, me, tick);
+            case APPROACH -> approach(mc, me, owner, tick);
             case NONE -> {
                 if (phase == Phase.FLEE) {
                     phase = Phase.FIGHT;
@@ -206,7 +324,7 @@ public final class Combat {
 
     // ---------------- 各个动作 ----------------
 
-    private void begin(int tick, LivingEntity first, boolean fleeing) {
+    private void begin(int tick, LivingEntity first, boolean fleeing, boolean protect) {
         active = true;
         startTick = tick;
         phaseStart = tick;
@@ -216,22 +334,24 @@ public final class Combat {
         gaveUp = false;
         ateThisFight = false;
         weaponChecked = false;
+        protecting = protect;
         phase = fleeing ? Phase.FLEE : Phase.FIGHT;
         target = fleeing ? null : first;
         targetKind = first == null ? "" : typeId(first);
         BaritoneBridge.cancelEverything();
-        CompanionMod.LOG.info(CompanionMod.TAG + "combat start target={} flee={} health={}", targetKind, fleeing, first == null ? 0 : first.getHealth());
+        CompanionMod.LOG.info(CompanionMod.TAG + "combat start target={} flee={} protect={} hunt={} health={}", targetKind, fleeing, protect,
+                huntKind, first == null ? 0 : first.getHealth());
     }
 
     private void attack(Minecraft mc, LocalPlayer me, Rules rules, boolean night, Entity attacker, int tick) {
         if (target == null) {
             return;
         }
-        if (!weaponChecked) {
+        if (!weaponChecked || CombatLogic.isBow(Executor.idOf(me.getMainHandItem()))) {
             selectWeapon(mc, me);
             weaponChecked = true;
         }
-        if (phase != Phase.FIGHT) {
+        if (phase != Phase.FIGHT && phase != Phase.GUARD) {
             phase = Phase.FIGHT;
         }
         me.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
@@ -251,7 +371,53 @@ public final class Combat {
         me.resetAttackStrengthTicker();
     }
 
-    private void approach(Minecraft mc, LocalPlayer me, int tick) {
+    /** 任务单 20：用弓——换到弓，按住使用键蓄力 ≥ 20 tick，瞄怪的身体中心松开。 */
+    private void shoot(Minecraft mc, LocalPlayer me, int tick) {
+        if (target == null) {
+            return;
+        }
+        Vec3 aim = target.position().add(0, target.getBbHeight() * 0.6, 0);
+        me.lookAt(EntityAnchorArgument.Anchor.EYES, aim);
+        if (phase != Phase.SHOOT) {
+            if (tick < shotCooldownUntil) {
+                return;
+            }
+            if (!selectBow(mc, me)) {
+                return;
+            }
+            BaritoneBridge.cancelEverything();
+            phase = Phase.SHOOT;
+            chargeStart = tick;
+            mc.options.keyUse.setDown(true);
+            useKeyHeld = true;
+            mc.gameMode.useItem(me, InteractionHand.MAIN_HAND);
+            return;
+        }
+        if (tick - chargeStart >= CombatLogic.BOW_CHARGE_TICKS && me.isUsingItem()) {
+            mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
+            mc.gameMode.releaseUsingItem(me);
+            shotCooldownUntil = tick + SHOT_COOLDOWN_TICKS;
+            phase = Phase.FIGHT;
+            CompanionMod.LOG.info(CompanionMod.TAG + "combat shot at {} ({} ticks)", targetKind, tick - chargeStart);
+        } else if (tick - chargeStart > CombatLogic.BOW_CHARGE_TICKS * 3) {
+            stopCharging(mc, me); // 没拉起来（没箭？）就算了，下一 tick 会走近战
+        }
+    }
+
+    private void stopCharging(Minecraft mc, LocalPlayer me) {
+        if (phase == Phase.SHOOT) {
+            mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
+            if (me.isUsingItem()) {
+                mc.gameMode.releaseUsingItem(me);
+            }
+            phase = Phase.FIGHT;
+            weaponChecked = false;
+        }
+    }
+
+    private void approach(Minecraft mc, LocalPlayer me, Player owner, int tick) {
         if (target == null) {
             return;
         }
@@ -260,9 +426,45 @@ public final class Combat {
             return;
         }
         IBaritone b = BaritoneBridge.baritone();
-        if (b != null) {
+        if (b == null) {
+            return;
+        }
+        if (protecting && owner != null) {
+            // 任务单 20：走到主人和怪的连线上离主人四成处拦下
+            double[] p = CombatLogic.interceptPoint(owner.getX(), owner.getY(), owner.getZ(), target.getX(), target.getY(), target.getZ(), 0.4);
+            b.getCustomGoalProcess().setGoalAndPath(new GoalNear(BlockPos.containing(p[0], p[1], p[2]), 1));
+        } else {
             b.getCustomGoalProcess().setGoalAndPath(new GoalNear(target.blockPosition(), 1));
-            lastGoalTick = tick;
+        }
+        lastGoalTick = tick;
+    }
+
+    /** 任务单 20：主人血少——站到主人和怪之间（离主人 15%），举盾挡着；怪到跟前照样挥。 */
+    private void guard(Minecraft mc, LocalPlayer me, Player owner, int tick) {
+        if (owner == null || target == null) {
+            return;
+        }
+        if (phase != Phase.GUARD) {
+            phase = Phase.GUARD;
+            phaseStart = tick;
+            CompanionMod.LOG.info(CompanionMod.TAG + "combat guarding owner (owner health {})", owner.getHealth());
+        }
+        if (tick - lastGoalTick >= GOAL_REFRESH_TICKS) {
+            IBaritone b = BaritoneBridge.baritone();
+            if (b != null) {
+                double[] p = CombatLogic.interceptPoint(owner.getX(), owner.getY(), owner.getZ(), target.getX(), target.getY(), target.getZ(), 0.15);
+                b.getCustomGoalProcess().setGoalAndPath(new GoalBlock(BlockPos.containing(p[0], p[1], p[2])));
+                lastGoalTick = tick;
+            }
+        }
+        me.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
+        if (me.getOffhandItem().getItem() instanceof ShieldItem && !useKeyHeld) {
+            if (CombatLogic.isBow(Executor.idOf(me.getMainHandItem()))) {
+                selectWeapon(mc, me);
+            }
+            mc.options.keyUse.setDown(true);
+            useKeyHeld = true;
+            mc.gameMode.useItem(me, InteractionHand.OFF_HAND);
         }
     }
 
@@ -282,8 +484,12 @@ public final class Combat {
         phase = Phase.SHIELD_BACK;
         phaseStart = tick;
         lastShieldTick = tick;
+        if (CombatLogic.isBow(Executor.idOf(me.getMainHandItem()))) {
+            selectWeapon(mc, me); // 主手拿着弓的话使用键会先拉弓，先换回剑
+        }
+        mc.options.keyUse.setDown(true);
+        useKeyHeld = true;
         mc.gameMode.useItem(me, InteractionHand.OFF_HAND);
-        shieldUp = true;
         if (target != null) {
             setGoalAway(me, target.position(), 3, tick);
         }
@@ -291,11 +497,12 @@ public final class Combat {
     }
 
     private void lowerShield(Minecraft mc, LocalPlayer me) {
-        if (shieldUp) {
+        if (useKeyHeld) {
+            mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
             if (me.isUsingItem()) {
                 mc.gameMode.releaseUsingItem(me);
             }
-            shieldUp = false;
         }
     }
 
@@ -306,6 +513,7 @@ public final class Combat {
             return;
         }
         lowerShield(mc, me);
+        stopCharging(mc, me);
         BaritoneBridge.cancelEverything();
         int src = pick.get().inventoryIndex();
         if (src < 9) {
@@ -330,12 +538,14 @@ public final class Combat {
         }
         if (tick - eatStart == 3) {
             mc.options.keyUse.setDown(true);
+            useKeyHeld = true;
             mc.gameMode.useItem(me, InteractionHand.MAIN_HAND);
             return;
         }
         boolean done = me.getFoodData().getFoodLevel() > foodBefore || !eatItem.equals(Executor.idOf(me.getMainHandItem()));
         if (done || tick - eatStart > EAT_TIMEOUT_TICKS) {
             mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
             if (me.isUsingItem()) {
                 mc.gameMode.releaseUsingItem(me);
             }
@@ -351,9 +561,13 @@ public final class Combat {
     private void giveUp(Minecraft mc, LocalPlayer me, int tick) {
         gaveUp = true;
         lowerShield(mc, me);
+        stopCharging(mc, me);
         phase = Phase.RUN;
         phaseStart = tick;
         lastGoalTick = -1000;
+        if (hunting()) {
+            finishHunt(HuntState.GAVE_UP);
+        }
         send.accept(MessageType.EVENT, Event.danger("overwhelmed", Observer.pos(me), Observer.dim(mc)));
         CompanionMod.LOG.info(CompanionMod.TAG + "combat overwhelmed after {} ticks, damage {} -> running", tick - startTick, damageTaken);
     }
@@ -395,7 +609,8 @@ public final class Combat {
     private void selectWeapon(Minecraft mc, LocalPlayer me) {
         var items = me.getInventory().items;
         int best = -1;
-        int bestRank = CombatLogic.weaponRank(Executor.idOf(me.getMainHandItem()));
+        String hand = Executor.idOf(me.getMainHandItem());
+        int bestRank = CombatLogic.isBow(hand) ? -1 : CombatLogic.weaponRank(hand);
         for (int i = 0; i < items.size(); i++) {
             ItemStack st = items.get(i);
             if (st.isEmpty()) {
@@ -408,22 +623,74 @@ public final class Combat {
             }
         }
         if (best < 0) {
+            if (CombatLogic.isBow(hand)) {
+                selectEmptyOrAnyHotbar(me); // 没剑：至少别拿着弓挥
+            }
             return;
         }
-        if (best < 9) {
-            me.getInventory().selected = best;
+        toHotbar(mc, me, best);
+        CompanionMod.LOG.info(CompanionMod.TAG + "combat weapon {}", Executor.idOf(items.get(best)));
+    }
+
+    private boolean selectBow(Minecraft mc, LocalPlayer me) {
+        if (CombatLogic.isBow(Executor.idOf(me.getMainHandItem()))) {
+            return true;
+        }
+        var items = me.getInventory().items;
+        for (int i = 0; i < items.size(); i++) {
+            if (CombatLogic.isBow(Executor.idOf(items.get(i)))) {
+                toHotbar(mc, me, i);
+                CompanionMod.LOG.info(CompanionMod.TAG + "combat bow out");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void toHotbar(Minecraft mc, LocalPlayer me, int index) {
+        if (index < 9) {
+            me.getInventory().selected = index;
         } else {
             mc.gameMode.handleInventoryMouseClick(me.inventoryMenu.containerId,
-                    ContainerSlots.slotFor(best, ContainerSlots.INVENTORY_MENU_START), WEAPON_HOTBAR_SLOT, ClickType.SWAP, me);
+                    ContainerSlots.slotFor(index, ContainerSlots.INVENTORY_MENU_START), WEAPON_HOTBAR_SLOT, ClickType.SWAP, me);
             me.getInventory().selected = WEAPON_HOTBAR_SLOT;
         }
-        CompanionMod.LOG.info(CompanionMod.TAG + "combat weapon {}", Executor.idOf(items.get(best)));
+    }
+
+    private static void selectEmptyOrAnyHotbar(LocalPlayer me) {
+        var items = me.getInventory().items;
+        for (int i = 0; i < 9; i++) {
+            if (!CombatLogic.isBow(Executor.idOf(items.get(i)))) {
+                me.getInventory().selected = i;
+                return;
+            }
+        }
+    }
+
+    private static boolean hasBow(LocalPlayer me) {
+        for (ItemStack st : me.getInventory().items) {
+            if (!st.isEmpty() && CombatLogic.isBow(Executor.idOf(st))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasArrow(LocalPlayer me) {
+        for (ItemStack st : me.getInventory().items) {
+            if (!st.isEmpty() && CombatLogic.isArrow(Executor.idOf(st))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void end(Minecraft mc, LocalPlayer me, int tick, String outcome) {
         lowerShield(mc, me);
+        stopCharging(mc, me);
         if (eating) {
             mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
             if (me.isUsingItem()) {
                 mc.gameMode.releaseUsingItem(me);
             }
@@ -432,13 +699,18 @@ public final class Combat {
         BaritoneBridge.cancelEverything();
         int ms = (tick - startTick) * 50;
         int dmg = Math.round(damageTaken);
-        CompanionMod.LOG.info(CompanionMod.TAG + "combat end target={} outcome={} ms={} damage={} killed={}", targetKind, outcome, ms, dmg, killed);
+        CompanionMod.LOG.info(CompanionMod.TAG + "combat end target={} outcome={} ms={} damage={} killed={} protect={}", targetKind, outcome,
+                ms, dmg, killed, protecting);
         send.accept(MessageType.EVENT, Event.combat(targetKind.isEmpty() ? "unknown" : targetKind, outcome, ms, dmg));
+        if (huntState == HuntState.FIGHTING) {
+            finishHunt("killed".equals(outcome) || "fled".equals(outcome) ? HuntState.DONE_OK : HuntState.GAVE_UP);
+        }
         active = false;
         phase = Phase.FIGHT;
         target = null;
         targetKind = "";
         gaveUp = false;
+        protecting = false;
     }
 
     // ---------------- 小工具 ----------------
@@ -489,5 +761,4 @@ public final class Combat {
         }
         return null;
     }
-
 }

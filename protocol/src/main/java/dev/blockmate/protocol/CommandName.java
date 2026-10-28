@@ -27,7 +27,9 @@ public enum CommandName {
     @SerializedName("sleep") SLEEP("sleep"),
     @SerializedName("go_home") GO_HOME("go_home"),
     @SerializedName("remember_place") REMEMBER_PLACE("remember_place"),
-    @SerializedName("use_furnace") USE_FURNACE("use_furnace");
+    @SerializedName("use_furnace") USE_FURNACE("use_furnace"),
+    /** 任务单 20：主人明确说"打那只 xx"才有，只打这一种且在 hostile 名单上。 */
+    @SerializedName("fight") FIGHT("fight");
 
     private final String wire;
 

@@ -88,6 +88,10 @@ public record Result(String commandId, ResultStatus status, Reason reason, JsonO
     }
 
     /** use_furnace：烧出来的数量。 */
+    /** 任务单 20：fight 的结果——打死了几只（失败时也带，表示打了一半）。 */
+    public record FightDetail(int killed) {
+    }
+
     public record UseFurnaceDetail(int smelted) {
     }
 }

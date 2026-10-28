@@ -621,6 +621,16 @@ public final class Hub {
             rememberPlace(step, args);
             return;
         }
+        if (step.command() == CommandName.FIGHT) {
+            // 任务单 20：铁规矩 5，不在能打名单上的不下发（模组那边还会再查一遍）
+            String kind = args.has("kind") && !args.get("kind").isJsonNull() ? Knowledge.normalizeId(args.get("kind").getAsString()) : "";
+            if (kind.isEmpty() || !knowledge.mobRules().hostile().contains(kind)) {
+                log.info("fight_not_allowed kind={}", kind);
+                synthStep(step, id -> Result.failed(id, Reason.NOT_ALLOWED));
+                return;
+            }
+            args.addProperty("kind", kind);
+        }
         CommandName wire = step.command();
         if (step.command() == CommandName.GO_HOME || (step.command() == CommandName.GOTO && !hasPos(args))) {
             String placeName = step.command() == CommandName.GO_HOME ? "home"
@@ -818,7 +828,7 @@ public final class Hub {
             case Brain.PlanDecision.REPLAN -> {
                 List<String> errors = new ArrayList<>();
                 List<PlanRun.Step> fresh = decision.newSteps() == null ? List.of()
-                        : PlanValidator.validateSteps(decision.newSteps(), step.index() + 1, errors, knowledge.blockRules());
+                        : PlanValidator.validateSteps(decision.newSteps(), step.index() + 1, errors, knowledge.blockRules(), knowledge.mobRules());
                 if (fresh.isEmpty() || !errors.isEmpty()) {
                     log.info("plan_replan_rejected plan_id={} errors={}", planId, errors);
                     sayDecision((say.isBlank() ? "" : say + " ") + "不过新步骤我没列对，这件事先放下。");
@@ -969,7 +979,7 @@ public final class Hub {
             IdlePolicy.Proposal pr = idle.accepted();
             log.info("chat_in len={} msg_id={} shortcut=idle_accept", text.length(), msg.id());
             memory.saveEvent("idle_accepted", null, msg.id(), obj("goal", pr.goal()));
-            PlanValidator.Validated v = PlanValidator.validate(makePlanArgs(pr.goal(), pr.steps()), knowledge.blockRules());
+            PlanValidator.Validated v = PlanValidator.validate(makePlanArgs(pr.goal(), pr.steps()), knowledge.blockRules(), knowledge.mobRules());
             if (v.ok() && companionInWorld()) {
                 directReply(env.id(), msg, "好嘞，这就去。");
                 startPlan(pr.goal(), v.steps(), msg.id(), "idle");
@@ -1063,7 +1073,7 @@ public final class Hub {
                     log.info("action_while_offline name=make_plan");
                     continue;
                 }
-                PlanValidator.Validated v = PlanValidator.validate(tc.arguments(), knowledge.blockRules());
+                PlanValidator.Validated v = PlanValidator.validate(tc.arguments(), knowledge.blockRules(), knowledge.mobRules());
                 if (v.ok()) {
                     log.info("plan_accepted steps={} attempt={}", v.steps().size(), planAttempt);
                     startPlan(v.goal().isBlank() ? src.text() : v.goal(), v.steps(), src.id());
@@ -1476,7 +1486,7 @@ public final class Hub {
                     log.info("idle_tick action=propose suppressed=rejected_recently goal_hash={}", IdlePolicy.goalKey(d.goal()).hashCode());
                     return;
                 }
-                PlanValidator.Validated v = PlanValidator.validate(makePlanArgs(d.goal(), d.steps()), knowledge.blockRules());
+                PlanValidator.Validated v = PlanValidator.validate(makePlanArgs(d.goal(), d.steps()), knowledge.blockRules(), knowledge.mobRules());
                 if (!v.ok()) {
                     log.info("idle_invalid_plan errors={}", v.errors());
                     return;

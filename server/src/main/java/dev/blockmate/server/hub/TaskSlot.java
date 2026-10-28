@@ -146,6 +146,7 @@ public final class TaskSlot {
             case CRAFT -> 30_000L;
             case PLACE, PICKUP_BLOCK -> 20_000L;
             case EAT -> 15_000L;
+            case FIGHT -> timeouts.fightS() * 1000L; // 任务单 20
             case SLEEP -> 90_000L;
         };
     }

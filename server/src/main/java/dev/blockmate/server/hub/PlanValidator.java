@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.blockmate.protocol.BlockRules;
+import dev.blockmate.protocol.MobRules;
 import dev.blockmate.protocol.CommandName;
 import dev.blockmate.server.brain.Tools;
 
@@ -29,6 +30,22 @@ public final class PlanValidator {
 
     /** makePlanArgs = make_plan 工具的参数 {goal, steps:[{command,args,why}]}；rules 是 knowledge/blocks.yaml 的白名单（任务单 12）。 */
     public static Validated validate(JsonObject makePlanArgs, BlockRules rules) {
+        return validate(makePlanArgs, rules, null);
+    }
+
+    /** 任务单 20：带怪物名单，fight 的 kind 要在 hostile 上。mobs 为 null 时不查名单。 */
+    public static Validated validate(JsonObject makePlanArgs, BlockRules rules, MobRules mobs) {
+        CURRENT_MOBS.set(mobs);
+        try {
+            return validateInner(makePlanArgs, rules);
+        } finally {
+            CURRENT_MOBS.remove();
+        }
+    }
+
+    private static final ThreadLocal<MobRules> CURRENT_MOBS = new ThreadLocal<>();
+
+    private static Validated validateInner(JsonObject makePlanArgs, BlockRules rules) {
         List<String> errors = new ArrayList<>();
         String goal = makePlanArgs != null && makePlanArgs.has("goal") && !makePlanArgs.get("goal").isJsonNull()
                 ? makePlanArgs.get("goal").getAsString().strip() : "";
@@ -42,6 +59,15 @@ public final class PlanValidator {
     }
 
     /** 校验一组步骤（make_plan 的 steps 或 plan_decision 的 new_steps），index 从 firstIndex 起编。 */
+    public static List<PlanRun.Step> validateSteps(JsonArray arr, int firstIndex, List<String> errors, BlockRules rules, MobRules mobs) {
+        CURRENT_MOBS.set(mobs);
+        try {
+            return validateSteps(arr, firstIndex, errors, rules);
+        } finally {
+            CURRENT_MOBS.remove();
+        }
+    }
+
     public static List<PlanRun.Step> validateSteps(JsonArray arr, int firstIndex, List<String> errors, BlockRules rules) {
         BlockRules r = rules == null ? BlockRules.empty() : rules;
         List<PlanRun.Step> out = new ArrayList<>();
@@ -113,7 +139,7 @@ public final class PlanValidator {
 
     /** 物品 / 方块 id 没写命名空间就补 minecraft:。 */
     static void normalizeIds(JsonObject args) {
-        for (String k : List.of("item", "block", "input", "fuel")) {
+        for (String k : List.of("item", "block", "input", "fuel", "kind")) {
             if (args.has(k) && args.get(k).isJsonPrimitive()) {
                 String v = args.get(k).getAsString().strip().toLowerCase();
                 if (!v.isEmpty() && !v.contains(":")) {
@@ -140,6 +166,15 @@ public final class PlanValidator {
             case DELIVER -> missing(a, "item") != null ? missing(a, "item") : positive(a, "count");
             case PICK_UP, CRAFT -> missing(a, "item");
             case USE_FURNACE -> missing(a, "input");
+            case FIGHT -> {
+                String m = missing(a, "kind");
+                if (m != null) {
+                    yield m;
+                }
+                MobRules mobs = CURRENT_MOBS.get();
+                String k = a.get("kind").getAsString();
+                yield mobs == null || mobs.hostile().contains(k) ? null : k + " 不在能打的名单上（村民、动物、玩家不能打）";
+            }
             case REMEMBER_PLACE -> missing(a, "name");
             case PLACE -> {
                 String m = missing(a, "block");

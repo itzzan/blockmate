@@ -24,6 +24,7 @@ timeouts_s:                     # 任务超时（细则第 8 节）；follow 没
   deliver: 90
   stop: 5
   rejoin: 60
+  fight: 60      # 任务单 20："打那只" 60 秒
   plan: 900                     # 一个多步计划的总时长（任务单 10），到了就整个停掉
 
 episode_time: "23:55"           # 每天几点把当天的事写成一条日记
@@ -50,4 +51,4 @@ idle:
 # 任务单 19：战斗开关。off = 被打只会跑；defend = 怪到跟前或先打它才还手（默认）；protect = 还会挡在主人前面（任务单 20）。
 # 网页上的下拉存在数据库里，设过就盖过这里。能打什么、绝不碰什么在 knowledge/mobs.yaml。
 combat:
-  mode: defend
+  mode: protect

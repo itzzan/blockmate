@@ -100,6 +100,7 @@ public final class SnapshotSummary {
             case GO_HOME -> "正在回家";
             case REMEMBER_PLACE -> "记地点";
             case USE_FURNACE -> "正在用熔炉";
+            case FIGHT -> "正在打架";
         };
     }
 }

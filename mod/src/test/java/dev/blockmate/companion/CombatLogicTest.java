@@ -85,4 +85,42 @@ class CombatLogicTest {
         assertEquals(0, CombatLogic.weaponRank("minecraft:bread"));
         assertEquals(10, CombatLogic.weaponRank("wooden_sword"));
     }
+
+    private static CombatLogic.Situation sit20(float health, double threat, boolean bow, boolean see, boolean protecting, boolean ownerLow) {
+        return new CombatLogic.Situation(health, false, false, threat, Double.NaN, 100, 0, 1000, false, bow, see, protecting, ownerLow);
+    }
+
+    @Test
+    void 任务单20_保护时主人血少顶在前面_6格外有弓箭用弓_看不见不射() {
+        assertEquals(CombatLogic.Action.GUARD, CombatLogic.decide(sit20(20, 6, true, true, true, true)), "主人血少：顶在前面");
+        assertEquals(CombatLogic.Action.ATTACK, CombatLogic.decide(sit20(20, 2, true, true, true, true)), "怪到跟前照样挥");
+        assertEquals(CombatLogic.Action.SHOOT, CombatLogic.decide(sit20(20, 6, true, true, true, false)), "主人没事：6 格外用弓");
+        assertEquals(CombatLogic.Action.SHOOT, CombatLogic.decide(sit20(20, 12, true, true, false, false)));
+        assertEquals(CombatLogic.Action.APPROACH, CombatLogic.decide(sit20(20, 5.9, true, true, false, false)), "不到 6 格靠近砍");
+        assertEquals(CombatLogic.Action.APPROACH, CombatLogic.decide(sit20(20, 10, false, true, false, false)), "没弓箭靠近");
+        assertEquals(CombatLogic.Action.APPROACH, CombatLogic.decide(sit20(20, 10, true, false, false, false)), "看不见不射");
+        assertEquals(CombatLogic.Action.GIVE_UP, CombatLogic.decide(new CombatLogic.Situation(20, false, false, 10, Double.NaN, 601, 0, 1000, false, true, true, true, true)), "放弃排在保护前面");
+    }
+
+    @Test
+    void 任务单20_主人在打的不抢_拦截点_种类匹配_弓箭认法() {
+        assertTrue(CombatLogic.ownerIsFighting(2.5, true, 20));
+        assertFalse(CombatLogic.ownerIsFighting(2.5, false, 20), "没挥手不算");
+        assertFalse(CombatLogic.ownerIsFighting(5, true, 20), "离得远不算");
+        assertFalse(CombatLogic.ownerIsFighting(2.5, true, 6), "主人血少就算他在打也上");
+        double[] p = CombatLogic.interceptPoint(0, 64, 0, 10, 64, 0, 0.4);
+        assertEquals(4.0, p[0], 1e-9);
+        assertEquals(64.0, p[1], 1e-9);
+        double[] g = CombatLogic.interceptPoint(0, 64, 0, 0, 64, 10, 0.15);
+        assertEquals(1.5, g[2], 1e-9);
+        double[] same = CombatLogic.interceptPoint(3, 64, 3, 3.1, 64, 3.2, 0.4);
+        assertEquals(3.0, same[0], 1e-9);
+        assertTrue(CombatLogic.huntMatches("minecraft:zombie", "zombie"));
+        assertFalse(CombatLogic.huntMatches("minecraft:zombie", "skeleton"));
+        assertFalse(CombatLogic.huntMatches("minecraft:zombie", ""));
+        assertTrue(CombatLogic.isBow("bow"));
+        assertFalse(CombatLogic.isBow("minecraft:crossbow"));
+        assertTrue(CombatLogic.isArrow("minecraft:spectral_arrow"));
+        assertFalse(CombatLogic.isArrow("minecraft:bow"));
+    }
 }

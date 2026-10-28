@@ -91,4 +91,22 @@ class PlanValidatorTest {
         assertEquals("minecraft:oak_log", PlanValidator.normalizeForDispatch(CommandName.MINE, j("{\"block\":\"oak_log\"}"), RULES)
                 .get("block").getAsString(), "本来就能挖的不动");
     }
+
+    @Test
+    void 任务单20_fight要kind且在能打名单上() {
+        dev.blockmate.protocol.MobRules mobs = new dev.blockmate.protocol.MobRules(List.of("minecraft:zombie"), List.of(), List.of("minecraft:villager"), List.of(), List.of());
+        PlanValidator.Validated ok = PlanValidator.validate(com.google.gson.JsonParser.parseString("""
+                {"goal":"打僵尸","steps":[{"command":"fight","args":{"kind":"zombie"}}]}""").getAsJsonObject(), RULES, mobs);
+        assertTrue(ok.ok(), String.join(";", ok.errors()));
+        assertEquals("minecraft:zombie", ok.steps().get(0).args().get("kind").getAsString(), "kind 补命名空间");
+        PlanValidator.Validated bad = PlanValidator.validate(com.google.gson.JsonParser.parseString("""
+                {"goal":"打村民","steps":[{"command":"fight","args":{"kind":"villager"}}]}""").getAsJsonObject(), RULES, mobs);
+        assertFalse(bad.ok());
+        assertTrue(bad.errors().get(0).contains("不在能打的名单上"), bad.errors().get(0));
+        PlanValidator.Validated noKind = PlanValidator.validate(com.google.gson.JsonParser.parseString("""
+                {"goal":"打","steps":[{"command":"fight","args":{}}]}""").getAsJsonObject(), RULES, mobs);
+        assertFalse(noKind.ok());
+        assertTrue(PlanValidator.validate(com.google.gson.JsonParser.parseString("""
+                {"goal":"打村民","steps":[{"command":"fight","args":{"kind":"villager"}}]}""").getAsJsonObject(), RULES).ok(), "没给名单时不查（老调用）");
+    }
 }

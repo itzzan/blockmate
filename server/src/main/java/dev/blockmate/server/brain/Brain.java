@@ -252,6 +252,12 @@ public final class Brain {
                             return "成功，挖到了 " + d.mined() + " 个，在你自己的背包里";
                         }
                     }
+                    case FIGHT -> {
+                        Result.FightDetail d = r.detailAs(Result.FightDetail.class);
+                        if (d != null) {
+                            return "成功，打死了 " + d.killed() + " 只";
+                        }
+                    }
                     case COLLECT -> {
                         Result.CollectDetail d = r.detailAs(Result.CollectDetail.class);
                         if (d != null) {

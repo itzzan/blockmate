@@ -133,6 +133,8 @@ public final class Executor implements AbstractGameEventListener {
         net.minecraft.world.level.block.Block block;
         GatherLogic.MineProgress mine;
         int lastProgressTick;
+        // fight（任务单 20）
+        String fightKind;
         int collectStart;
         // craft / place / pickup_block（任务单 14）
         ArrayDeque<Click> clicks;
@@ -295,6 +297,7 @@ public final class Executor implements AbstractGameEventListener {
             case USE_FURNACE -> startUseFurnace(env.id(), cmd.args(), mc);
             case EAT -> startEat(env.id(), cmd.args(), mc, false);
             case SLEEP -> startSleep(env.id(), cmd.args(), mc);
+            case FIGHT -> startFight(env.id(), cmd.args(), mc);
             default -> {
                 // 任务单 9 加的新命令，模组还没实现：按 handbook 7.1 立刻拒绝，别让 hub 等 3 秒判无响应
                 CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
@@ -449,6 +452,9 @@ public final class Executor implements AbstractGameEventListener {
         if (current == null) {
             return;
         }
+        if (current.name == CommandName.FIGHT) {
+            combat.cancelHunt();
+        }
         releaseUseKey();
         if (!current.internal) {
             send(MessageType.RESULT, Result.cancelled(current.id));
@@ -462,6 +468,7 @@ public final class Executor implements AbstractGameEventListener {
 
     /** 与后台断开：立刻停，丢掉任务，不补发 result（细则第 15 节）。 */
     public void onLinkLost() {
+        combat.cancelHunt();
         releaseUseKey();
         if (current != null) {
             CompanionMod.LOG.info(CompanionMod.TAG + "link lost, dropping task {}", current.name.wire());
@@ -503,7 +510,8 @@ public final class Executor implements AbstractGameEventListener {
             combat.stop(mc, mc.player, tick, "stop command");
         }
         boolean fighting = combat.tick(mc, mc.player, rules, tick);
-        if (fighting) {
+        boolean fightTask = current != null && current.name == CommandName.FIGHT;
+        if (fighting && !fightTask) {
             if (!pausedForCombat || current != pausedTask) {
                 pauseForCombat(mc, mc.player);
             }
@@ -536,6 +544,7 @@ public final class Executor implements AbstractGameEventListener {
             case USE_FURNACE -> tickUseFurnace(mc, me);
             case EAT -> tickEat(mc, me);
             case SLEEP -> tickSleep(mc, me);
+            case FIGHT -> tickFight(mc, me);
             case PICKUP_BLOCK -> {
                 if (current.internal) {
                     tickBedPickup(mc, me);
@@ -554,7 +563,9 @@ public final class Executor implements AbstractGameEventListener {
     private void pauseForCombat(Minecraft mc, LocalPlayer me) {
         pausedForCombat = true;
         pausedTask = current;
-        releaseUseKey();
+        if (!combat.holdingUseKey()) {
+            releaseUseKey();
+        }
         if (current != null) {
             closeMenuIfOpen(current);
         }
@@ -785,6 +796,57 @@ public final class Executor implements AbstractGameEventListener {
             return;
         }
         finish(r);
+    }
+
+    /** 任务单 20：fight(kind)——只打这一种且在能打名单上；16 格内找，打完回 ok 带打死数。 */
+    private void startFight(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        if (BaritoneBridge.baritone() == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        send(MessageType.ACK, Ack.accepted(id));
+        Command.FightArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.FightArgs.class);
+        String kind = a == null || a.kind() == null ? "" : Rules.normalize(a.kind());
+        if (kind.isEmpty() || !rules.hostile().contains(kind) || "off".equals(rules.combatMode())) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "fight: {} not allowed (hostile={} mode={})", kind, rules.hostile().contains(kind), rules.combatMode());
+            finish(Result.failed(id, Reason.NOT_ALLOWED));
+            return;
+        }
+        Task t = new Task(id, CommandName.FIGHT, args, tick);
+        t.fightKind = kind;
+        current = t;
+        combat.hunt(kind, tick);
+    }
+
+    private void tickFight(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        Combat.HuntState st = combat.huntState();
+        switch (st) {
+            case NOT_FOUND -> {
+                combat.cancelHunt();
+                finish(Result.failed(t.id, Reason.ITEM_NOT_FOUND, new Result.FightDetail(0)));
+            }
+            case DONE_OK -> {
+                int killed = combat.huntKilled();
+                combat.cancelHunt();
+                finish(Result.ok(t.id, new Result.FightDetail(killed)));
+            }
+            case TIMEOUT -> {
+                int killed = combat.huntKilled();
+                combat.cancelHunt();
+                finish(Result.failed(t.id, Reason.TIMEOUT, new Result.FightDetail(killed)));
+            }
+            case GAVE_UP -> {
+                int killed = combat.huntKilled();
+                combat.cancelHunt();
+                finish(Result.failed(t.id, Reason.STUCK, new Result.FightDetail(killed)));
+            }
+            case NONE -> finish(Result.failed(t.id, Reason.STUCK, new Result.FightDetail(combat.huntKilled())));
+            default -> {
+                // SEARCHING / FIGHTING：Combat 在干活
+            }
+        }
     }
 
     private void startSleep(String id, JsonObject args, Minecraft mc) {

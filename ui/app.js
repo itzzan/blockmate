@@ -136,7 +136,7 @@
   // ---------- 计划进度（任务单 10） ----------
   const STEP_NAMES = { follow: '跟随', come_here: '过来', wait_here: '等在原地', stop: '停', pick_up: '捡东西', deliver: '交付',
     report_status: '报状态', cancel: '取消', rejoin: '重连', goto: '去', mine: '挖', collect: '捡掉落物', craft: '合成',
-    place: '放方块', pickup_block: '收回方块', eat: '吃', sleep: '睡觉', go_home: '回家', remember_place: '记地点', use_furnace: '用熔炉' };
+    place: '放方块', pickup_block: '收回方块', eat: '吃', sleep: '睡觉', go_home: '回家', remember_place: '记地点', use_furnace: '用熔炉', fight: '打架' };
   let planHideTimer = null;
   function renderPlan(p) {
     if (!p || !p.steps) { el.plan.hidden = true; return; }
@@ -315,7 +315,7 @@
   el.combat.addEventListener('change', () => {
     const mode = el.combat.value;
     if (!send('combat_control', { mode })) return;
-    system({ off: '战斗已关：被打它只会跑', defend: '战斗：只自保，怪到跟前或先打它才还手', protect: '战斗：保护你（任务单 20 做好前和只自保一样）' }[mode] || '战斗开关已改');
+    system({ off: '战斗已关：被打它只会跑', defend: '战斗：只自保，怪到跟前或先打它才还手', protect: '战斗：保护你，怪冲向你它挡在中间；你血少它顶在前面' }[mode] || '战斗开关已改');
   });
 
   window.addEventListener('beforeunload', () => { closedByUs = true; if (ws) ws.close(); });
