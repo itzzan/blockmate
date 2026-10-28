@@ -76,7 +76,7 @@ class OllamaNativeClientTest {
         assertEquals("companion-local", body.get("model").getAsString());
         assertTrue(body.get("stream").getAsBoolean());
         assertEquals(false, body.get("think").getAsBoolean());
-        assertEquals(22, body.getAsJsonArray("tools").size());
+        assertEquals(23, body.getAsJsonArray("tools").size());
         assertEquals(2, body.getAsJsonArray("messages").size());
         JsonObject noTools = OllamaNativeClient.buildBody(new ChatRequest("m", List.of(ChatMessage.user("u")), null));
         assertTrue(!noTools.has("tools"));

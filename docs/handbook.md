@@ -176,6 +176,7 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | bed_collected | pos, dim | 任务单 15：睡醒后把自己放的床收回来了 |
 | landmark | what, pos, dim | 任务单 17：看见了地标。what ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal，pos 是地标的位置（不是自己的）。模组每 tick 扫一列（x 固定，z ±24、y ±8），49 tick 一遍、歇 50 tick，约每 5 秒一遍；村庄 = 钟或 24 格内 ≥ 2 个村民，传送门按维度分，下界砖 ≥ 20 块且在下界 = 下界要塞，苔石砖 + 石砖楼梯同时有且在主世界 = 要塞，末地传送门框 = 末地传送门；同种 100 格内只报一次（模组侧，重连清零） |
 | danger | what, pos, dim | 任务单 17：看见了危险，第一版只有 what=lava（8 格内岩浆 ≥ 20 块），32 格内只报一次；任务单 19 加 what=overwhelmed（打不过了，正往主人 / 出生点跑），hub 只提示不记事实 |
+| lead_paused | what, pos, dim | 任务单 21：带路因前方危险停下了，what = lava / cliff。hub 存事件、让伙伴说一句"前面有岩浆，我停这儿了，你说"继续"我再走。"（不经过模型），记下这条命令 id，主人说"继续"才下 continue |
 | combat | what, reason, count, delta | 任务单 19：打完一架。借用字段：what = 对手种类 id，reason = 结局 killed / fled / gave_up / stopped / died，count = 用时毫秒，delta = 掉的血。hub 存事件、网页提示"它和僵尸打了一架：打死了，用了 12 秒，掉了 6 血" |
 
 【补丁 2026-10-22】模组侧两条行为：
@@ -219,6 +220,8 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | remember_place | name，pos（可选，默认当前位置） | 记地点。【任务单 13 改】hub 自己完成、不下发模组：拿最新 snapshot 的 pos / dim 写进 places 表（同名覆盖），合成 result ok（detail {name, pos}）；没有快照（不在世界里）合成 failed no_place_known。名字整理：家 / home / 家里 换成 home，床 / bed 换成 bed。模组不存地点 |
 | use_furnace | input，fuel，count（默认全部） | 用 8 格内的熔炉把 input 烧完并取出；没熔炉回 item_not_found，没燃料回 no_materials。【任务单 14 第二批】背包没 input 回 no_materials（missing input）；fuel 没给按煤、木炭、煤块、木板、原木挑，都没有回 no_materials（missing minecraft:coal）；8 格内没熔炉但背包有就临时放一个（熔炉只在这一步允许放，不进 placeable），用完挖回来（里面剩的一起掉出来捡走）；走到 2 格内打开熔炉菜单（0 原料 1 燃料 2 成品），count 没给就把原料和燃料各 shift 一叠进去，给了就拿起原料叠右键逐个放 count 次；每 2 秒看成品格，有就 shift 取出并发 progress（累计 smelted）；原料格空且成品取完回 ok；原料还有、炉子灭了超过 5 秒且燃料格空回 no_materials 带 smelted；整单 300 秒超时 |
 | fight | kind | 【任务单 20】主人明确说"打那只 xx"才有，固定短语不做（要认种类，交给模型）。hub 先查 kind 在 mobs.yaml 的 hostile 上，不在直接合成 not_allowed 不下发；模组再查一遍（名单外或 combat.mode=off 回 not_allowed）。模组 16 格内找这一种（2 秒没找到回 item_not_found），用任务单 19 的打法打，这一种都死了或跑出 24 格回 ok（detail killed）；60 秒超时回 timeout 带 killed；打不过放弃回 stuck 带 killed。打架期间 fight 任务本身不暂停（它就是那场架）；被新命令换掉就不再找这一种，已经打起来的按自保规则打完 |
+| lead | x, y, z 或 place | 【任务单 21】带路：hub 把地点名换成坐标（places 再 world_facts 取最近同种，地标另带 landmark 中文名），模组走在前面：目标点交给 Baritone，每 tick 看主人距离——超过 32 格（下界 / 末地 16）停下、面向主人、发 progress "waiting"，主人回到 16 格内（8）再走并发 "resumed"；主人 30 秒看不见回 target_lost；每 10 tick 看前方 4 格（脚平面和脚下一格）有没有岩浆、前 3 格脚下空 4 格以上是不是断崖，有就停下发 event lead_paused{what=lava/cliff} 和 progress "danger"，等 continue 命令，2 分钟没等到回 stuck；到达 2 格内回 ok（GotoDetail）；不超时。固定短语"带我回家 / 带我回家吧 / 带我去家 / 领我回家"→ lead place=home，"带我去 xx"交给模型 |
+| continue | — | 【任务单 21】不占任务槽。hub 在带路因危险停着（lead_paused 之后、那条命令还没结束）且主人说固定短语"继续 / 走吧 / 接着走 / 继续走 / 可以走了"时直接下发并回"好，接着走。"；模组收到就把带路目标重新设回去，别的时候只回 ok 不做事 |
 
 ### 7.2 ack
 
@@ -373,6 +376,12 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
   - 使用键：盾、弓、吃都靠 `mc.options.keyUse` 按住（vanilla 每帧看键没按着就 releaseUsingItem，任务单 19 只调 useItem 的写法其实下一帧就松了，这一张顺手修了）；执行器暂停时 Combat 按着键就不松（`holdingUseKey`）。主手拿着弓时先换回剑再举盾（使用键会先拉弓）。
   - fight 命令：见 §7.1；hub 的 PlanValidator 多一个带 MobRules 的入口（fight 的 kind 要在 hostile 上，kind 补 minecraft: 前缀），dispatchNext 对 fight 再查一遍名单；TaskSlot 超时 `timeouts_s.fight`（默认 60）；工具 22 个；结果描述"成功，打死了 N 只"；网页任务名"打架"。
   - 日志（模组）：`hunt X start` / `hunt X -> DONE_OK|NOT_FOUND|TIMEOUT|GAVE_UP killed=`、`combat start … protect= hunt=`、`combat guarding owner`、`combat bow out`、`combat shot at X (N ticks)`、`combat end … protect=`；hub `fight_not_allowed kind=`。
+- 【任务单 21】带路（2026-10-28，guide-3 §3.1）：
+  - 工具 lead(x, y, z | place)（23 个工具；计划里允许 lead，不允许 continue）；校验同 goto（坐标或地点名）。
+  - 后台：dispatchNext 对 lead 像 goto / go_home 一样把地点名换成坐标，但 wire 保留 lead，并把地标的中文名放进 args.landmark；`leadDest` 记命令 id → 目的地叫法（地标名 > 家 / 床 > 坐标），到了"说一句"的提示用"带主人去村庄"当目标，所以它会说"到村庄了"；lead_paused 事件 → `sayPlain` 一句 + 记 `leadPausedCommandId`；主人说"继续"（Shortcuts.isContinue）且那条带路还在跑 → 直接发 continue 命令（不走任务槽）并回"好，接着走。"，否则这几个词照旧交给模型。
+  - 模组 `LeadLogic`（纯逻辑）：farLimit / nearLimit 按维度，dangerAhead(probe, 脚的方块, 前进方向)：前 4 格看岩浆（脚平面和脚下一格），前 3 格看脚下连续空 > 4 格；方向取移动速度，没在动取视线。执行器 tickLead：到达 → 等人（waiting / resumed）→ 危险停下 → 主人跟丢 → 路径失败挖一次 → 每 60 tick 报距离 → Baritone 空了重设目标；打架按 19 暂停、打完重设目标（路上的怪交给战斗模块，不问主人）。continue 命令只在"带路因危险停着"时有事做。
+  - 日志（模组）：`lead started target= place= landmark=`、`lead: owner N blocks behind (> 32) -> waiting`、`lead: owner back within 16 -> go on`、`lead: lava|cliff ahead -> paused, waiting for 'continue'`、`lead: continue after danger`、`lead: no 'continue' in 2 min -> stuck`、`lead: owner gone for 30 s -> target_lost`；hub `chat_in … shortcut=lead|continue`、`event lead_paused reason= cmd_id=`、`chat_out … plain=true`。
+
 
 
 

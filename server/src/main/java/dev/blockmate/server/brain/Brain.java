@@ -270,7 +270,7 @@ public final class Brain {
                             return "成功，做出来 " + d.crafted() + " 个，在你自己的背包里";
                         }
                     }
-                    case GOTO, GO_HOME -> {
+                    case LEAD, GOTO, GO_HOME -> {
                         return "成功，到了";
                     }
                     case PLACE -> {

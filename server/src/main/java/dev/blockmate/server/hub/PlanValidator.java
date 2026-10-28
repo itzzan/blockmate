@@ -184,7 +184,7 @@ public final class PlanValidator {
                 String b = a.get("block").getAsString();
                 yield rules.placeable().contains(b) ? null : "只允许放工作台、火把、床，不能放 " + b;
             }
-            case GOTO -> {
+            case GOTO, LEAD -> {
                 boolean pos = a.has("x") && a.has("y") && a.has("z");
                 boolean place = a.has("place") && !a.get("place").isJsonNull() && !a.get("place").getAsString().isBlank();
                 yield pos || place ? null : "要给坐标 x/y/z 或地点名 place";

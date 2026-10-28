@@ -135,6 +135,13 @@ public final class Executor implements AbstractGameEventListener {
         int lastProgressTick;
         // fight（任务单 20）
         String fightKind;
+        // lead（任务单 21）
+        String leadLandmark;
+        boolean leadWaiting;
+        String leadDanger;
+        int leadPauseStart;
+        int ownerMissingSince = -1;
+        int lastDangerCheckTick;
         int collectStart;
         // craft / place / pickup_block（任务单 14）
         ArrayDeque<Click> clicks;
@@ -298,6 +305,23 @@ public final class Executor implements AbstractGameEventListener {
             case EAT -> startEat(env.id(), cmd.args(), mc, false);
             case SLEEP -> startSleep(env.id(), cmd.args(), mc);
             case FIGHT -> startFight(env.id(), cmd.args(), mc);
+            case LEAD -> startLead(env.id(), cmd.args(), mc);
+            case CONTINUE -> {
+                // 任务单 21：不占任务槽；带路因危险停着就接着走
+                send(MessageType.ACK, Ack.accepted(env.id()));
+                if (current != null && current.name == CommandName.LEAD && current.leadDanger != null) {
+                    current.leadDanger = null;
+                    current.lastDangerCheckTick = tick + 40; // 刚被叫走，2 秒内别又停
+                    IBaritone b = BaritoneBridge.baritone();
+                    if (b != null) {
+                        setGoal(b, current, goalPos(null, current), 2);
+                    }
+                    CompanionMod.LOG.info(CompanionMod.TAG + "lead: continue after danger");
+                } else {
+                    CompanionMod.LOG.info(CompanionMod.TAG + "continue: nothing paused");
+                }
+                send(MessageType.RESULT, Result.ok(env.id()));
+            }
             default -> {
                 // 任务单 9 加的新命令，模组还没实现：按 handbook 7.1 立刻拒绝，别让 hub 等 3 秒判无响应
                 CompanionMod.LOG.info(CompanionMod.TAG + "command {} not implemented yet -> rejected", cmd.name().wire());
@@ -545,6 +569,7 @@ public final class Executor implements AbstractGameEventListener {
             case EAT -> tickEat(mc, me);
             case SLEEP -> tickSleep(mc, me);
             case FIGHT -> tickFight(mc, me);
+            case LEAD -> tickLead(mc, me);
             case PICKUP_BLOCK -> {
                 if (current.internal) {
                     tickBedPickup(mc, me);
@@ -613,7 +638,7 @@ public final class Executor implements AbstractGameEventListener {
                     b.getFollowProcess().pickup(stack -> want == null || want.equals(idOf(stack)));
                 }
             }
-            case GOTO, COME_HERE, DELIVER, STOP, WAIT_HERE, REJOIN -> {
+            case GOTO, COME_HERE, DELIVER, STOP, WAIT_HERE, REJOIN, LEAD -> {
                 t.lastGoal = null;
                 t.lastReplanTick = 0;
             }
@@ -1838,6 +1863,147 @@ public final class Executor implements AbstractGameEventListener {
                 setGoal(b, t, goalPos(null, t), 2);
             }
         }
+    }
+
+    // ---------------- 任务单 21：带路 ----------------
+
+    /** lead：和 goto 一样走到坐标（hub 已把地点名换成坐标），但走在前面：主人落后就停下等，前方有岩浆 / 断崖就停下问。 */
+    private void startLead(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        send(MessageType.ACK, Ack.accepted(id));
+        if (args == null || !args.has("x") || !args.has("y") || !args.has("z")) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "lead: no coordinates -> no_place_known");
+            finish(Result.failed(id, Reason.NO_PLACE_KNOWN));
+            return;
+        }
+        Task t = new Task(id, CommandName.LEAD, args, tick);
+        t.devGoal = new Pos(args.get("x").getAsDouble(), args.get("y").getAsDouble(), args.get("z").getAsDouble());
+        t.leadLandmark = args.has("landmark") && !args.get("landmark").isJsonNull() ? args.get("landmark").getAsString() : null;
+        current = t;
+        setGoal(b, t, goalPos(null, t), 2);
+        CompanionMod.LOG.info(CompanionMod.TAG + "lead started target={} place={} landmark={}", t.devGoal,
+                args.has("place") ? args.get("place").getAsString() : "-", t.leadLandmark);
+    }
+
+    private void tickLead(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        IBaritone b = BaritoneBridge.baritone();
+        Vec3 target = new Vec3(t.devGoal.x(), t.devGoal.y(), t.devGoal.z());
+        double dist = me.position().distanceTo(target);
+        if (dist <= ARRIVE_DISTANCE) {
+            BaritoneBridge.cancelEverything();
+            finish(Result.ok(t.id, new Result.GotoDetail(round(dist))));
+            return;
+        }
+        Player owner = findOwner(mc);
+        if (owner == null) {
+            if (t.ownerMissingSince < 0) {
+                t.ownerMissingSince = tick;
+            }
+            if (tick - t.ownerMissingSince > LeadLogic.OWNER_LOST_TICKS) {
+                BaritoneBridge.cancelEverything();
+                CompanionMod.LOG.info(CompanionMod.TAG + "lead: owner gone for 30 s -> target_lost");
+                finish(Result.failed(t.id, Reason.TARGET_LOST, new Result.GotoDetail(round(dist))));
+                return;
+            }
+            if (!t.leadWaiting) {
+                t.leadWaiting = true;
+                BaritoneBridge.cancelEverything();
+                send(MessageType.PROGRESS, new Progress(t.id, "waiting", round(dist), Observer.pos(me)));
+                CompanionMod.LOG.info(CompanionMod.TAG + "lead: can't see owner, waiting");
+            }
+            return;
+        }
+        t.ownerMissingSince = -1;
+        // 危险停着：等主人说"继续"（continue 命令），2 分钟没等到按 stuck 结束
+        if (t.leadDanger != null) {
+            me.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, owner.getEyePosition());
+            if (tick - t.leadPauseStart > LeadLogic.DANGER_WAIT_TICKS) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "lead: no 'continue' in 2 min -> stuck");
+                finish(Result.failed(t.id, Reason.STUCK, new Result.GotoDetail(round(dist))));
+            }
+            return;
+        }
+        String dim = Observer.dim(mc);
+        double od = me.distanceTo(owner);
+        if (t.leadWaiting) {
+            if (od <= LeadLogic.nearLimit(dim)) {
+                t.leadWaiting = false;
+                setGoal(b, t, goalPos(null, t), 2);
+                send(MessageType.PROGRESS, new Progress(t.id, "resumed", round(dist), Observer.pos(me)));
+                CompanionMod.LOG.info(CompanionMod.TAG + "lead: owner back within {} -> go on", LeadLogic.nearLimit(dim));
+            } else {
+                me.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, owner.getEyePosition());
+            }
+            return;
+        }
+        if (od > LeadLogic.farLimit(dim)) {
+            t.leadWaiting = true;
+            BaritoneBridge.cancelEverything();
+            send(MessageType.PROGRESS, new Progress(t.id, "waiting", round(dist), Observer.pos(me)));
+            CompanionMod.LOG.info(CompanionMod.TAG + "lead: owner {} blocks behind (> {}) -> waiting", round(od), LeadLogic.farLimit(dim));
+            return;
+        }
+        if (t.pathFailed) {
+            if (digOutRetry(t, b, goalPos(null, t), 2)) {
+                return;
+            }
+            BaritoneBridge.cancelEverything();
+            finish(Result.failed(t.id, Reason.PATH_FAILED, new Result.GotoDetail(round(dist))));
+            return;
+        }
+        if (tick - t.lastDangerCheckTick >= LeadLogic.DANGER_CHECK_EVERY_TICKS) {
+            t.lastDangerCheckTick = tick;
+            Vec3 mv = me.getDeltaMovement();
+            double dx = mv.x;
+            double dz = mv.z;
+            if (Math.hypot(dx, dz) < 0.02) {
+                Vec3 look = me.getLookAngle();
+                dx = look.x;
+                dz = look.z;
+            }
+            String danger = LeadLogic.dangerAhead(blockProbe(mc), me.getBlockX(), me.getBlockY(), me.getBlockZ(), dx, dz);
+            if (danger != null) {
+                BaritoneBridge.cancelEverything();
+                t.leadDanger = danger;
+                t.leadPauseStart = tick;
+                send(MessageType.EVENT, Event.leadPaused(danger, Observer.pos(me), dim));
+                send(MessageType.PROGRESS, new Progress(t.id, "danger", round(dist), Observer.pos(me)));
+                CompanionMod.LOG.info(CompanionMod.TAG + "lead: {} ahead -> paused, waiting for 'continue'", danger);
+                return;
+            }
+        }
+        if (tick - t.lastProgressTick >= MINE_PROGRESS_TICKS) {
+            t.lastProgressTick = tick;
+            send(MessageType.PROGRESS, new Progress(t.id, "distance", round(dist), Observer.pos(me)));
+        }
+        if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS) {
+            boolean idle = !b.getPathingBehavior().isPathing() && !b.getCustomGoalProcess().isActive();
+            if (idle) {
+                setGoal(b, t, goalPos(null, t), 2);
+            }
+        }
+    }
+
+    private static LeadLogic.Probe blockProbe(Minecraft mc) {
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        return new LeadLogic.Probe() {
+            @Override
+            public boolean isLava(int x, int y, int z) {
+                return mc.level.getBlockState(p.set(x, y, z)).is(net.minecraft.world.level.block.Blocks.LAVA);
+            }
+
+            @Override
+            public boolean isSolid(int x, int y, int z) {
+                var st = mc.level.getBlockState(p.set(x, y, z));
+                return !st.isAir() && !st.getCollisionShape(mc.level, p).isEmpty();
+            }
+        };
     }
 
     private void startMine(String id, JsonObject args, Minecraft mc) {

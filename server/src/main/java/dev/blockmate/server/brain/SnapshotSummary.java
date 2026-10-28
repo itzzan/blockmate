@@ -101,6 +101,8 @@ public final class SnapshotSummary {
             case REMEMBER_PLACE -> "记地点";
             case USE_FURNACE -> "正在用熔炉";
             case FIGHT -> "正在打架";
+            case LEAD -> "正在带路";
+            case CONTINUE -> "继续走";
         };
     }
 }

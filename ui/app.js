@@ -136,7 +136,7 @@
   // ---------- 计划进度（任务单 10） ----------
   const STEP_NAMES = { follow: '跟随', come_here: '过来', wait_here: '等在原地', stop: '停', pick_up: '捡东西', deliver: '交付',
     report_status: '报状态', cancel: '取消', rejoin: '重连', goto: '去', mine: '挖', collect: '捡掉落物', craft: '合成',
-    place: '放方块', pickup_block: '收回方块', eat: '吃', sleep: '睡觉', go_home: '回家', remember_place: '记地点', use_furnace: '用熔炉', fight: '打架' };
+    place: '放方块', pickup_block: '收回方块', eat: '吃', sleep: '睡觉', go_home: '回家', remember_place: '记地点', use_furnace: '用熔炉', fight: '打架', lead: '带路中', continue: '继续走' };
   let planHideTimer = null;
   function renderPlan(p) {
     if (!p || !p.steps) { el.plan.hidden = true; return; }

@@ -147,6 +147,8 @@ public final class TaskSlot {
             case PLACE, PICKUP_BLOCK -> 20_000L;
             case EAT -> 15_000L;
             case FIGHT -> timeouts.fightS() * 1000L; // 任务单 20
+            case LEAD -> 0L; // 任务单 21：像 follow 一样不超时，危险停下 2 分钟由模组自己按 stuck 结束
+            case CONTINUE -> 5000L;
             case SLEEP -> 90_000L;
         };
     }

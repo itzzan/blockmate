@@ -344,7 +344,7 @@ class HubIntegrationTest {
         String lastMsg = decision.messages().get(decision.messages().size() - 1).content();
         assertTrue(lastMsg.contains("你在主世界"), "状态句在最后一条 user 里：" + lastMsg);
         assertFalse(decision.messages().get(0).content().contains("你在主世界"), "system 里不再有状态句");
-        assertEquals(22, decision.tools().size(), "决策请求带全部工具");
+        assertEquals(23, decision.tools().size(), "决策请求带全部工具");
 
         // c. 跟我来：假执行器打印"收到 follow"，3 秒后结果到达，网页收到"来了"
         ui.send(MessageType.CHAT, new Chat("跟我来"));
@@ -522,6 +522,52 @@ class HubIntegrationTest {
         Status st = ui.statusWhere(x -> Boolean.FALSE.equals(x.idle()), 3000);
         assertTrue(st != null);
         assertEquals("off", app.memory().setting("idle_enabled").orElse(""));
+    }
+
+    /** 任务单 21：记过家后"带我回家"直接下 lead 带坐标；模组说前面有岩浆 → 它说一句；"继续"下 continue 不经过模型。 */
+    @Test
+    void 任务单21_带我回家_停下问_继续() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        WsClient mock = startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        ui.send(MessageType.CHAT, new Chat("记住这里是家"));
+        ui.reply(8000);
+        int before = model.requests.size();
+        waitFor(() -> model.requests.size() == before, 500, "quiet");
+        ui.send(MessageType.CHAT, new Chat("带我回家"));
+        waitFor(() -> mockConsole.stream().anyMatch(l -> l.contains("收到 lead")), 5000, "mock 收到 lead");
+        // 假执行器几秒后就会回 ok，所以停下和"继续"要紧接着发
+        mock.send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.leadPaused("lava", new dev.blockmate.protocol.Pos(1, 64, 1), "minecraft:overworld")));
+        // 固定短语的回复是空的（只下命令没说话），"记下了"那句也可能还排在前面：找到带"岩浆"的那条为止
+        String said = replyContaining(ui, "岩浆", 5000);
+        assertTrue(said != null && said.contains("继续"), "没等到停下那句：" + said);
+        ui.send(MessageType.CHAT, new Chat("继续"));
+        assertEquals("好，接着走。", replyContaining(ui, "接着走", 5000));
+        waitFor(() -> mockConsole.stream().anyMatch(l -> l.contains("收到 continue")), 5000, "mock 收到 continue");
+        // 带我回家和继续都不经过模型决策（动作结束后"说一句"那种只带 1 个工具的调用是允许的）
+        assertTrue(model.requests.subList(before, model.requests.size()).stream()
+                .allMatch(rq -> rq.tools() == null || rq.tools().size() <= 1), "带我回家 / 继续不该调模型决策");
+        assertTrue(app.memory().eventsBetween(0, Long.MAX_VALUE, java.util.Set.of()).stream().anyMatch(e -> "lead_paused".equals(e.kind())));
+    }
+
+    /** 一直收回复，直到某条包含 text；超时返回 null。 */
+    private static String replyContaining(UiClient ui, String text, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            String r;
+            try {
+                r = ui.reply(Math.max(1, deadline - System.currentTimeMillis()));
+            } catch (AssertionError timeout) {
+                return null;
+            }
+            if (r != null && r.contains(text)) {
+                return r;
+            }
+        }
+        return null;
     }
 
     private static String noticeContaining(UiClient ui, String text, long timeoutMs) throws InterruptedException {

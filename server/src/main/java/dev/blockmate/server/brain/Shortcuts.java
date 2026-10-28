@@ -49,7 +49,12 @@ public final class Shortcuts {
             Map.entry("去睡吧", CommandName.SLEEP),
             Map.entry("吃点东西", CommandName.EAT),
             Map.entry("吃东西", CommandName.EAT),
-            Map.entry("吃点什么", CommandName.EAT));
+            Map.entry("吃点什么", CommandName.EAT),
+            // 任务单 21
+            Map.entry("带我回家", CommandName.LEAD),
+            Map.entry("带我回家吧", CommandName.LEAD),
+            Map.entry("带我去家", CommandName.LEAD),
+            Map.entry("领我回家", CommandName.LEAD));
 
     private Shortcuts() {
     }
@@ -74,6 +79,14 @@ public final class Shortcuts {
             "我们到哪了", "我们到哪儿了", "现在到哪了", "现在到哪儿了", "到哪了", "到哪儿了", "我们现在到哪了", "我们现在到哪儿了",
             "进度", "进度呢", "什么进度", "现在什么进度", "我们什么进度", "我们现在什么进度", "走到哪了", "我们走到哪了",
             "现在在哪个阶段", "我们在哪个阶段", "在哪个阶段");
+
+    // ---------- 任务单 21：带路因危险停下后的"继续"（只在带路停着时用；平时交给模型） ----------
+
+    private static final java.util.Set<String> CONTINUE = java.util.Set.of("继续", "走吧", "接着走", "继续走", "可以走了", "走", "接着带");
+
+    public static boolean isContinue(String text) {
+        return CONTINUE.contains(normalize(text));
+    }
 
     // ---------- 任务单 18：对提议的接受 / 拒绝（只在上一条是它的提议、2 分钟内才用；平时这些词仍是闲聊） ----------
 
@@ -118,6 +131,9 @@ public final class Shortcuts {
         com.google.gson.JsonObject o = new com.google.gson.JsonObject();
         if (name == CommandName.REMEMBER_PLACE) {
             o.addProperty("name", "home");
+        }
+        if (name == CommandName.LEAD) {
+            o.addProperty("place", "home");
         }
         return o;
     }

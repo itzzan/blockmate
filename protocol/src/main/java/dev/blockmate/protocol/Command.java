@@ -85,6 +85,10 @@ public record Command(CommandName name, JsonObject args) {
     }
 
     /** use_furnace：把 input 用 fuel 烧 count 个（默认全部）；附近要有熔炉。 */
+    /** 任务单 21：lead 的参数——hub 已把地点名换成坐标；place 是地点名，landmark 是地标的中文名（到了好说"到村庄了"），都可空。 */
+    public record LeadArgs(Double x, Double y, Double z, String place, String landmark) {
+    }
+
     /** 任务单 20：fight 的参数——怪的种类 id（如 minecraft:zombie），16 格内找这一种。 */
     public record FightArgs(String kind) {
     }

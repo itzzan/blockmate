@@ -153,6 +153,12 @@ public final class Simulator {
                 sendSnapshot();
                 send(MessageType.RESULT, Result.ok(envelope.id()));
             }
+            case CONTINUE -> {
+                // 任务单 21：不占任务槽，当前任务（带路）接着走
+                console.accept("收到 continue");
+                send(MessageType.ACK, Ack.accepted(envelope.id()));
+                send(MessageType.RESULT, Result.ok(envelope.id()));
+            }
             default -> {
                 cancelCurrent();
                 task = new Task(envelope.id(), cmd.name(), now, false, failStuckPending, cmd.args());

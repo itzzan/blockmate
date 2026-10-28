@@ -25,11 +25,11 @@ public final class Tools {
     /** 动作工具：会变成发给模组的 command（第一阶段 7 个 + 任务单 11 加的 10 个单步工具）。 */
     public static final Set<String> ACTIONS = Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver",
             "report_status", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home",
-            "remember_place", "use_furnace", "fight");
+            "remember_place", "use_furnace", "fight", "lead");
 
     /** 计划里允许出现的命令（不含 stop / cancel / report_status / rejoin）。 */
     public static final Set<String> PLANNABLE = Set.of("follow", "come_here", "wait_here", "pick_up", "deliver", "goto",
-            "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place", "use_furnace", "fight");
+            "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place", "use_furnace", "fight", "lead");
 
     private static final Set<String> REQUIRED_KEYS = Set.of("item", "count", "text", "block", "goal", "steps", "action",
             "say", "name", "input", "kind");
@@ -96,6 +96,9 @@ public final class Tools {
                 "count", prop("integer", "烧几个，可不填，默认全部"))));
         a.add(fn("fight", "主人明确说打某种怪时用（\"打那只僵尸\"\"打烈焰人\"）：只打这一种，16 格内没有会说没看见，打完回主人身边。村民、动物、玩家不能打", Map.of(
                 "kind", prop("string", "怪的英文 id，如 minecraft:zombie / minecraft:skeleton / minecraft:blaze"))));
+        a.add(fn("lead", "带主人去一个地方：你走在前面，主人落后你就停下等。主人说\"带我去 xx\"\"带我回家\"时用；去记过的地点或看见过的地标给 place，去坐标给 x/y/z", Map.of(
+                "x", prop("number", "坐标 x"), "y", prop("number", "坐标 y"), "z", prop("number", "坐标 z"),
+                "place", prop("string", "地点名，如 home / 村庄 / 矿洞；给了 place 就不用坐标"))));
         a.add(makePlan());
         a.add(remember());
         return a;

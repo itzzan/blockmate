@@ -109,4 +109,18 @@ class PlanValidatorTest {
         assertTrue(PlanValidator.validate(com.google.gson.JsonParser.parseString("""
                 {"goal":"打村民","steps":[{"command":"fight","args":{"kind":"villager"}}]}""").getAsJsonObject(), RULES).ok(), "没给名单时不查（老调用）");
     }
+
+    @Test
+    void 任务单21_lead要坐标或地点名() {
+        assertTrue(PlanValidator.validate(JsonParser.parseString("""
+                {"goal":"带路","steps":[{"command":"lead","args":{"place":"村庄"}}]}""").getAsJsonObject(), RULES).ok());
+        assertTrue(PlanValidator.validate(JsonParser.parseString("""
+                {"goal":"带路","steps":[{"command":"lead","args":{"x":1,"y":64,"z":2}}]}""").getAsJsonObject(), RULES).ok());
+        PlanValidator.Validated bad = PlanValidator.validate(JsonParser.parseString("""
+                {"goal":"带路","steps":[{"command":"lead","args":{}}]}""").getAsJsonObject(), RULES);
+        assertFalse(bad.ok());
+        assertTrue(bad.errors().get(0).contains("坐标"), bad.errors().get(0));
+        assertFalse(PlanValidator.validate(JsonParser.parseString("""
+                {"goal":"x","steps":[{"command":"continue","args":{}}]}""").getAsJsonObject(), RULES).ok(), "continue 不能进计划");
+    }
 }

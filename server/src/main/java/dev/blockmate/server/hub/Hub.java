@@ -143,6 +143,12 @@ public final class Hub {
     private String planSource = "owner";
     private String pendingPlanSource = "owner";
 
+    // ---------- 任务单 21：带路 ----------
+    /** 带路命令 id → 目的地的叫法（家 / 村庄 / 那个坐标），到了说一句用。 */
+    private final Map<String, String> leadDest = new HashMap<>();
+    /** 带路因危险停着的那条命令 id；主人说"继续"才下 continue。 */
+    private String leadPausedCommandId;
+
     // ---------- 任务单 19：战斗开关 ----------
     /** off / defend / protect；设置表 combat_mode 盖过 config 的 combat.mode。 */
     private String combatMode;
@@ -412,6 +418,38 @@ public final class Hub {
         recordFact(Landmarks.MINE_SITE, null, lastSnapshot.pos(), lastSnapshot.dim(), "task_result");
     }
 
+    /** 任务单 21：目的地怎么叫——地标名 > 地点名（home=家、bed=床）> 坐标。 */
+    static String leadDestName(JsonObject args) {
+        if (args == null) {
+            return "目的地";
+        }
+        if (args.has("landmark") && !args.get("landmark").isJsonNull() && !args.get("landmark").getAsString().isBlank()) {
+            return args.get("landmark").getAsString();
+        }
+        if (args.has("place") && !args.get("place").isJsonNull() && !args.get("place").getAsString().isBlank()) {
+            String pl = args.get("place").getAsString();
+            return switch (pl) {
+                case "home" -> "家";
+                case "bed" -> "床";
+                default -> pl;
+            };
+        }
+        if (args.has("x") && args.has("y") && args.has("z")) {
+            return "（" + Math.round(args.get("x").getAsDouble()) + ", " + Math.round(args.get("y").getAsDouble()) + ", "
+                    + Math.round(args.get("z").getAsDouble()) + "）";
+        }
+        return "目的地";
+    }
+
+    /** 伙伴自己说的一句（带路停下）：存消息、发网页，不经过模型。 */
+    private void sayPlain(String text) {
+        String replyId = UUID.randomUUID().toString();
+        replyChunk(replyId, null, text);
+        StoredMessage saved = memory.saveMessage("companion", text, null, null);
+        replyDone(replyId, null, saved.id());
+        log.info("chat_out len={} plain=true msg_id={}", text.length(), saved.id());
+    }
+
     /** 不经过模型、直接回主人一句（任务单 17：进度、记地标）。 */
     private void directReply(String inReplyTo, StoredMessage src, String text) {
         String replyId = UUID.randomUUID().toString();
@@ -470,6 +508,13 @@ public final class Hub {
                 } else if (ev.pos() != null) {
                     recordFact(Landmarks.DANGER, null, ev.pos(), ev.dim(), "seen");
                 }
+            }
+            case LEAD_PAUSED -> {
+                memory.saveEvent("lead_paused", null, null, ProtocolCodec.toBody(ev));
+                leadPausedCommandId = planCommandId;
+                String why = "cliff".equals(ev.what()) ? "前面是断崖" : "前面有岩浆";
+                log.info("event lead_paused reason={} cmd_id={}", ev.what(), planCommandId);
+                sayPlain(why + "，我停这儿了，你说\"继续\"我再走。");
             }
             case COMBAT -> {
                 memory.saveEvent("combat", null, null, ProtocolCodec.toBody(ev));
@@ -554,6 +599,10 @@ public final class Hub {
         if (outcome != TaskSlot.ResultOutcome.UNKNOWN) {
             commandNames.remove(r.commandId());
         }
+        leadDest.remove(r.commandId());
+        if (r.commandId().equals(leadPausedCommandId)) {
+            leadPausedCommandId = null;
+        }
         pushStatus(true);
     }
 
@@ -632,7 +681,9 @@ public final class Hub {
             args.addProperty("kind", kind);
         }
         CommandName wire = step.command();
-        if (step.command() == CommandName.GO_HOME || (step.command() == CommandName.GOTO && !hasPos(args))) {
+        String factKind = null;
+        if (step.command() == CommandName.GO_HOME || (step.command() == CommandName.GOTO && !hasPos(args))
+                || (step.command() == CommandName.LEAD && !hasPos(args))) {
             String placeName = step.command() == CommandName.GO_HOME ? "home"
                     : normalizePlaceName(args.has("place") && !args.get("place").isJsonNull() ? args.get("place").getAsString() : "");
             Optional<StoredPlace> p = memory.place(placeName);
@@ -645,6 +696,7 @@ public final class Hub {
                             lastSnapshot.pos().x(), lastSnapshot.pos().z(), Double.MAX_VALUE);
                     if (f.isPresent()) {
                         p = Optional.of(new StoredPlace(placeName, f.get().dim(), f.get().x(), f.get().y(), f.get().z(), f.get().ts()));
+                        factKind = kind;
                         log.info("place_from_fact name={} kind={} fact_id={}", placeName, kind, f.get().id());
                     }
                 }
@@ -659,11 +711,22 @@ public final class Hub {
             g.addProperty("y", p.get().y());
             g.addProperty("z", p.get().z());
             g.addProperty("place", placeName);
+            if (step.command() == CommandName.LEAD) {
+                // 任务单 21：带路保留 lead，顺便带上地标的中文名，到了好说"到村庄了"
+                if (factKind != null) {
+                    g.addProperty("landmark", Landmarks.kindName(factKind));
+                }
+                wire = CommandName.LEAD;
+            } else {
+                wire = CommandName.GOTO;
+            }
             args = g;
-            wire = CommandName.GOTO;
             log.info("place_resolved name={} for={}", placeName, step.command().wire());
         }
         planCommandId = issueCommand(wire, args, plan.sourceMessageId());
+        if (step.command() == CommandName.LEAD && planCommandId != null) {
+            leadDest.put(planCommandId, leadDestName(args));
+        }
         pushPlan();
     }
 
@@ -755,6 +818,9 @@ public final class Hub {
             log.info("plan_step plan_id={} index={} command={} state=done", plan.planId(), step.index(), step.command().wire());
             if (done) {
                 String goal = plan.size() > 1 ? plan.goal() : null;
+                if (goal == null && step.command() == CommandName.LEAD) {
+                    goal = "带主人去" + leadDest.getOrDefault(r.commandId(), "目的地"); // 任务单 21：到了说"到村庄了"
+                }
                 finishPlan();
                 say(step.command(), r, goal);
             } else {
@@ -997,6 +1063,16 @@ public final class Hub {
                 log.info("idle_quiet_mode on");
             }
             directReply(env.id(), msg, quiet ? "好，那我不提了，你想干什么跟我说。" : "好，那不提了。");
+            return;
+        }
+        // 任务单 21：带路因危险停着，主人说"继续"就下 continue；别的时候这几个词交给模型
+        if (Shortcuts.isContinue(text) && leadPausedCommandId != null && mc != null && plan != null && plan.running()) {
+            Envelope cont = envelope(MessageType.COMMAND, Peer.MC, Command.of(CommandName.CONTINUE));
+            mc.send(cont);
+            memory.saveEvent("command", cont.id(), msg.id(), obj("name", "continue"));
+            log.info("chat_in len={} msg_id={} shortcut=continue lead_cmd={}", text.length(), msg.id(), leadPausedCommandId);
+            leadPausedCommandId = null;
+            directReply(env.id(), msg, "好，接着走。");
             return;
         }
         // 任务单 17：进度问句、"记住我们到 xx 了"、"记住这里是 xx"都不经过模型

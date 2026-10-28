@@ -29,7 +29,11 @@ public enum CommandName {
     @SerializedName("remember_place") REMEMBER_PLACE("remember_place"),
     @SerializedName("use_furnace") USE_FURNACE("use_furnace"),
     /** 任务单 20：主人明确说"打那只 xx"才有，只打这一种且在 hostile 名单上。 */
-    @SerializedName("fight") FIGHT("fight");
+    @SerializedName("fight") FIGHT("fight"),
+    /** 任务单 21：带路——走在前面，主人落后就等；参数同 goto，另带 landmark（到了说"到村庄了"）。 */
+    @SerializedName("lead") LEAD("lead"),
+    /** 任务单 21：带路因危险停下后主人说"继续"；不占任务槽。 */
+    @SerializedName("continue") CONTINUE("continue");
 
     private final String wire;
 
@@ -43,7 +47,7 @@ public enum CommandName {
 
     /** 是否占用任务槽（stop 和 cancel 是对槽位的操作，不占槽；remember_place 只是记一笔，也不占）。 */
     public boolean occupiesSlot() {
-        return this != STOP && this != CANCEL && this != REMEMBER_PLACE;
+        return this != STOP && this != CANCEL && this != REMEMBER_PLACE && this != CONTINUE;
     }
 
     /** 按 wire 名找，找不到返回 null。 */

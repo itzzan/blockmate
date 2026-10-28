@@ -24,7 +24,7 @@ class EnumCoverageTest {
         Set<String> wires = Arrays.stream(CommandName.values()).map(CommandName::wire).collect(Collectors.toSet());
         assertEquals(Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver", "report_status",
                 "cancel", "rejoin", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home",
-                "remember_place", "use_furnace", "fight"), wires);
+                "remember_place", "use_furnace", "fight", "lead", "continue"), wires);
     }
 
     @Test

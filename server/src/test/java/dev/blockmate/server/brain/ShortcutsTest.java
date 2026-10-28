@@ -80,4 +80,17 @@ class ShortcutsTest {
         assertTrue(!Shortcuts.isReject("不知道"));
         assertTrue(!Shortcuts.isAccept("") && !Shortcuts.isReject(null));
     }
+
+    @Test
+    void 任务单21_带我回家和继续() {
+        assertEquals(CommandName.LEAD, Shortcuts.match("带我回家！").orElseThrow());
+        assertEquals(CommandName.LEAD, Shortcuts.match("带我回家吧").orElseThrow());
+        assertEquals("home", Shortcuts.argsFor(CommandName.LEAD).get("place").getAsString());
+        assertTrue(Shortcuts.match("带我去村庄").isEmpty(), "带我去 xx 交给模型认地点");
+        assertTrue(Shortcuts.isContinue("继续"));
+        assertTrue(Shortcuts.isContinue("走吧。"));
+        assertTrue(Shortcuts.isContinue("接着走"));
+        assertTrue(!Shortcuts.isContinue("继续挖"));
+        assertTrue(!Shortcuts.isContinue(null));
+    }
 }
