@@ -33,6 +33,7 @@ import dev.blockmate.protocol.Snapshot;
 import dev.blockmate.protocol.Status;
 import dev.blockmate.protocol.TaskInfo;
 import dev.blockmate.server.Config;
+import dev.blockmate.server.brain.Blueprint;
 import dev.blockmate.server.brain.Landmarks;
 import dev.blockmate.server.brain.MobNames;
 import dev.blockmate.server.brain.Progression;
@@ -142,6 +143,12 @@ public final class Hub {
     /** 当前计划是谁发起的：owner（主人要的）/ idle（它提议、主人点头的），plans 表的 source 列。 */
     private String planSource = "owner";
     private String pendingPlanSource = "owner";
+
+    // ---------- 任务单 22：计划里的"问主人"步 ----------
+    /** 正在等主人回答的那一步（ask_owner）；主人说"点 / 好"继续，"不"整个作废，2 分钟不答也作废。 */
+    private PlanRun.Step awaitingStep;
+    private long awaitingSince;
+    static final long ASK_OWNER_TIMEOUT_MS = 120_000;
 
     // ---------- 任务单 21：带路 ----------
     /** 带路命令 id → 目的地的叫法（家 / 村庄 / 那个坐标），到了说一句用。 */
@@ -409,6 +416,19 @@ public final class Hub {
         return (fresh ? "记下了：这里是" : "这儿我记过了，是") + Landmarks.kindName(kind) + "。";
     }
 
+    /** 任务单 22：门搭好了就把门里那格记成传送门（按当前维度分主世界 / 下界）。 */
+    private void rememberPortal(Result r) {
+        if (r.status() != dev.blockmate.protocol.ResultStatus.OK || commandNames.get(r.commandId()) != CommandName.BUILD_PORTAL) {
+            return;
+        }
+        Result.BuildPortalDetail d = r.detailAs(Result.BuildPortalDetail.class);
+        if (d == null || d.inside() == null) {
+            return;
+        }
+        String dim = lastSnapshot != null && lastSnapshot.dim() != null ? lastSnapshot.dim() : "minecraft:overworld";
+        recordFact(Landmarks.DIM_NETHER.equals(dim) ? Landmarks.PORTAL_NETHER : Landmarks.PORTAL_OVERWORLD, null, d.inside(), dim, "task_result");
+    }
+
     /** 任务单 17：挖成功的位置记成矿点（32 格内不重复，不提示）。 */
     private void rememberMineSite(Result r) {
         if (r.status() != dev.blockmate.protocol.ResultStatus.OK || commandNames.get(r.commandId()) != CommandName.MINE
@@ -580,6 +600,7 @@ public final class Hub {
         log.info("result cmd_id={} status={} reason={} outcome={}", r.commandId(), r.status(), r.reason(), outcome);
         rememberBedIfSlept(r);
         rememberMineSite(r);
+        rememberPortal(r);
         String stopSource = stopCommands.remove(r.commandId());
         if (stopSource != null) {
             if ("button".equals(stopSource)) {
@@ -635,6 +656,7 @@ public final class Hub {
         }
         planSource = pendingPlanSource;
         pendingPlanSource = "owner";
+        awaitingStep = null;
         plan = new PlanRun(UUID.randomUUID().toString(), goal == null ? "" : goal, steps, sourceMessageId, now());
         log.info("plan_start plan_id={} steps={}", plan.planId(), steps.size());
         dispatchNext();
@@ -669,6 +691,28 @@ public final class Hub {
         if (step.command() == CommandName.REMEMBER_PLACE) {
             rememberPlace(step, args);
             return;
+        }
+        if (step.command() == CommandName.ASK_OWNER) {
+            // 任务单 22：铁规矩 4——停下问主人，不下发
+            String say = args.has("say") && !args.get("say").isJsonNull() && !args.get("say").getAsString().isBlank()
+                    ? args.get("say").getAsString() : "要我继续吗？";
+            awaitingStep = step;
+            awaitingSince = now();
+            log.info("ask_owner plan_id={} index={}", plan.planId(), step.index());
+            memory.saveEvent("ask_owner", null, plan.sourceMessageId(), obj("say", say));
+            sayPlain(say);
+            pushPlan();
+            return;
+        }
+        if (step.command() == CommandName.BUILD_PORTAL) {
+            // 任务单 22：图纸随命令发，模组不读文件
+            Blueprint bp = knowledge.blueprint("nether_portal");
+            if (bp == null) {
+                log.info("build_portal: no blueprint -> stuck");
+                synthStep(step, id -> Result.failed(id, Reason.STUCK, new Result.BuildPortalDetail(null, 0, "no_blueprint")));
+                return;
+            }
+            args = bp.toArgs();
         }
         if (step.command() == CommandName.FIGHT) {
             // 任务单 20：铁规矩 5，不在能打名单上的不下发（模组那边还会再查一遍）
@@ -1063,6 +1107,50 @@ public final class Hub {
                 log.info("idle_quiet_mode on");
             }
             directReply(env.id(), msg, quiet ? "好，那我不提了，你想干什么跟我说。" : "好，那不提了。");
+            return;
+        }
+        // 任务单 22：计划停在"问主人"那一步——"点 / 好 / 去"继续，"不 / 别"整个作废；别的话照旧交给模型
+        if (awaitingStep != null && plan != null && plan.running()) {
+            if (Shortcuts.isAskYes(text)) {
+                PlanRun.Step st = awaitingStep;
+                awaitingStep = null;
+                log.info("chat_in len={} msg_id={} shortcut=ask_owner_yes", text.length(), msg.id());
+                memory.saveEvent("ask_owner_yes", null, msg.id(), null);
+                directReply(env.id(), msg, "好嘞。");
+                synthStep(st, Result::ok);
+                return;
+            }
+            if (Shortcuts.isReject(text)) {
+                awaitingStep = null;
+                log.info("chat_in len={} msg_id={} shortcut=ask_owner_no", text.length(), msg.id());
+                memory.saveEvent("ask_owner_no", null, msg.id(), null);
+                directReply(env.id(), msg, "好，那先不做了。");
+                abortQuietly(PlanRun.Outcome.ABORTED);
+                return;
+            }
+        }
+        // 任务单 22："我们去下界"固定四步：搭门 → 问主人 → 点火 → 进门；材料不够先说缺什么
+        if (Shortcuts.isGoNether(text)) {
+            log.info("chat_in len={} msg_id={} shortcut=go_nether", text.length(), msg.id());
+            if (!companionInWorld()) {
+                directReply(env.id(), msg, NOTICE_OFFLINE + "。");
+                return;
+            }
+            Map<String, Integer> inv = lastSnapshot != null && lastSnapshot.inventory() != null ? lastSnapshot.inventory() : Map.of();
+            int obsidian = inv.getOrDefault("minecraft:obsidian", 0);
+            int flint = inv.getOrDefault("minecraft:flint_and_steel", 0);
+            if (obsidian < 10 || flint < 1) {
+                String lack = (obsidian < 10 ? "黑曜石现在 " + obsidian + " 块，还差 " + (10 - obsidian) + " 块" : "")
+                        + (obsidian < 10 && flint < 1 ? "，" : "") + (flint < 1 ? "没有打火石" : "");
+                directReply(env.id(), msg, "去下界要 10 块黑曜石和 1 个打火石：" + lack + "，凑齐了再叫我。");
+                return;
+            }
+            JsonObject ask = new JsonObject();
+            ask.addProperty("say", "门搭好了，点吗？");
+            directReply(env.id(), msg, "好，材料够。我在脚边搭门，搭好问你点不点。");
+            startPlan("去下界", List.of(new PlanRun.Step(0, CommandName.BUILD_PORTAL, new JsonObject()),
+                    new PlanRun.Step(1, CommandName.ASK_OWNER, ask), new PlanRun.Step(2, CommandName.LIGHT_PORTAL, new JsonObject()),
+                    new PlanRun.Step(3, CommandName.ENTER_PORTAL, new JsonObject())), msg.id());
             return;
         }
         // 任务单 21：带路因危险停着，主人说"继续"就下 continue；别的时候这几个词交给模型
@@ -1465,6 +1553,12 @@ public final class Hub {
         }
         if (now - lastStatusPush >= STATUS_INTERVAL_MS) {
             pushStatus(true);
+        }
+        if (awaitingStep != null && plan != null && plan.running() && now - awaitingSince > ASK_OWNER_TIMEOUT_MS) {
+            log.info("ask_owner_timeout plan_id={}", plan.planId());
+            awaitingStep = null;
+            sayPlain("没等到你回话，这事先放着。");
+            abortQuietly(PlanRun.Outcome.ABORTED);
         }
         idleTick(now);
     }

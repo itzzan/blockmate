@@ -18,6 +18,10 @@ import java.util.List;
  */
 public final class LandmarkScanner {
 
+    /** 任务单 22：最近一次报出去的地标和时间（explore 看它判断"找到要塞了"）。 */
+    public static volatile LandmarkLogic.Found lastFound;
+    public static volatile long lastFoundAtMs;
+
     private final LandmarkLogic logic = new LandmarkLogic();
     private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
     private LandmarkLogic.Tally tally;
@@ -115,6 +119,10 @@ public final class LandmarkScanner {
             }
             Pos pos = new Pos(f.x(), f.y(), f.z());
             out.add(f.danger() ? Event.danger(f.kind(), pos, dim) : Event.landmark(f.kind(), pos, dim));
+            if (!f.danger()) {
+                lastFound = f;
+                lastFoundAtMs = System.currentTimeMillis();
+            }
             CompanionMod.LOG.info(CompanionMod.TAG + "event {} what={} pos=({}, {}, {})", f.danger() ? "danger" : "landmark",
                     f.kind(), Math.round(f.x()), Math.round(f.y()), Math.round(f.z()));
         }

@@ -103,6 +103,11 @@ public final class SnapshotSummary {
             case FIGHT -> "正在打架";
             case LEAD -> "正在带路";
             case CONTINUE -> "继续走";
+            case BUILD_PORTAL -> "正在搭传送门";
+            case LIGHT_PORTAL -> "正在点传送门";
+            case ENTER_PORTAL -> "正在进传送门";
+            case EXPLORE -> "正在探路";
+            case ASK_OWNER -> "等你回答";
         };
     }
 }

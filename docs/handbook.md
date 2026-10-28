@@ -222,6 +222,11 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | fight | kind | 【任务单 20】主人明确说"打那只 xx"才有，固定短语不做（要认种类，交给模型）。hub 先查 kind 在 mobs.yaml 的 hostile 上，不在直接合成 not_allowed 不下发；模组再查一遍（名单外或 combat.mode=off 回 not_allowed）。模组 16 格内找这一种（2 秒没找到回 item_not_found），用任务单 19 的打法打，这一种都死了或跑出 24 格回 ok（detail killed）；60 秒超时回 timeout 带 killed；打不过放弃回 stuck 带 killed。打架期间 fight 任务本身不暂停（它就是那场架）；被新命令换掉就不再找这一种，已经打起来的按自保规则打完 |
 | lead | x, y, z 或 place | 【任务单 21】带路：hub 把地点名换成坐标（places 再 world_facts 取最近同种，地标另带 landmark 中文名），模组走在前面：目标点交给 Baritone，每 tick 看主人距离——超过 32 格（下界 / 末地 16）停下、面向主人、发 progress "waiting"，主人回到 16 格内（8）再走并发 "resumed"；主人 30 秒看不见回 target_lost；每 10 tick 看前方 4 格（脚平面和脚下一格）有没有岩浆、前 3 格脚下空 4 格以上是不是断崖，有就停下发 event lead_paused{what=lava/cliff} 和 progress "danger"，等 continue 命令，2 分钟没等到回 stuck；到达 2 格内回 ok（GotoDetail）；不超时。固定短语"带我回家 / 带我回家吧 / 带我去家 / 领我回家"→ lead place=home，"带我去 xx"交给模型 |
 | continue | — | 【任务单 21】不占任务槽。hub 在带路因危险停着（lead_paused 之后、那条命令还没结束）且主人说固定短语"继续 / 走吧 / 接着走 / 继续走 / 可以走了"时直接下发并回"好，接着走。"；模组收到就把带路目标重新设回去，别的时候只回 ok 不做事 |
+| build_portal | block, frame, corners, inside, light, enter（hub 从 knowledge/blueprints/nether_portal.yaml 读了填进去，模型调工具时不用给） | 【任务单 22】按图纸搭门框。先数黑曜石 ≥ frame 数（不够回 no_materials 带缺几块）；角用黑曜石（够 14 块）否则用圆石 / 泥土 / 下界岩 / 深板岩圆石 / 石头 / 木板临时垫（都没有回 no_materials 缺 cobblestone）；脚边 3 格内找 4×5 的空地（门框、角、门里都空，贴地那行脚下结实，不把自己围进去；沿 x 放不下转 90 度），找不到回 stuck（note no_flat_ground）；走到门框正前方 2 格的站位（20 秒没到就原地开始）；按顺序放（贴地那行靠地，上面靠下面，顶排靠角；够不着先走近，10 秒还够不着回 stuck place_failed；每块放完 1 秒没出现重试一次）；角是脚手架的话搭完挖掉（挖不掉就留着）；最后数门框 10 块都是黑曜石才回 ok（detail inside = 门里那格、placed），少了回 stuck frame_incomplete。黑曜石和脚手架只在这一步允许放，不进 placeable |
+| light_portal | — | 【任务单 22】拿打火石点刚搭的门（只认本维度最近一次 build_portal，没有回 item_not_found；没打火石回 no_materials）：走到站位，对 light 那块的上面使用，2 秒内门里出现传送门方块回 ok，重试一次不行回 stuck |
+| enter_portal | — | 【任务单 22】走进传送门：先找最近一次搭的门，没有就找 8 格内（上下 4 格）最近的传送门方块，没有回 item_not_found；走到门里那格就停下不动（4 秒传送），维度一变回 ok（detail dim）；60 秒没过去回 stuck |
+| explore | — | 【任务单 22】Baritone 探索（explore 从当前位置），每 3 秒不在探就再发一次；地标扫描报出 fortress / stronghold（在这条命令开始之后）就停下回 ok（detail found, pos）；主人落后 32 格（下界 / 末地 16）停下等、回到 16（8）再探；5 分钟没找到回 item_not_found；每 10 秒发 progress "exploring" |
+| ask_owner | say | 【任务单 22】只在计划里出现，hub 自己处理不下发：走到这一步就把 say 说出去（不经过模型）停下等；主人说"点 / 点吧 / 好 / 去 / 行 / 可以"继续（Shortcuts.isAskYes），"不 / 别 / 等会"整个计划作废（回"好，那先不做了。"），2 分钟不答也作废（说"没等到你回话，这事先放着。"）；别的话照旧交给模型，问题还挂着 |
 
 ### 7.2 ack
 
@@ -381,6 +386,13 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
   - 后台：dispatchNext 对 lead 像 goto / go_home 一样把地点名换成坐标，但 wire 保留 lead，并把地标的中文名放进 args.landmark；`leadDest` 记命令 id → 目的地叫法（地标名 > 家 / 床 > 坐标），到了"说一句"的提示用"带主人去村庄"当目标，所以它会说"到村庄了"；lead_paused 事件 → `sayPlain` 一句 + 记 `leadPausedCommandId`；主人说"继续"（Shortcuts.isContinue）且那条带路还在跑 → 直接发 continue 命令（不走任务槽）并回"好，接着走。"，否则这几个词照旧交给模型。
   - 模组 `LeadLogic`（纯逻辑）：farLimit / nearLimit 按维度，dangerAhead(probe, 脚的方块, 前进方向)：前 4 格看岩浆（脚平面和脚下一格），前 3 格看脚下连续空 > 4 格；方向取移动速度，没在动取视线。执行器 tickLead：到达 → 等人（waiting / resumed）→ 危险停下 → 主人跟丢 → 路径失败挖一次 → 每 60 tick 报距离 → Baritone 空了重设目标；打架按 19 暂停、打完重设目标（路上的怪交给战斗模块，不问主人）。continue 命令只在"带路因危险停着"时有事做。
   - 日志（模组）：`lead started target= place= landmark=`、`lead: owner N blocks behind (> 32) -> waiting`、`lead: owner back within 16 -> go on`、`lead: lava|cliff ahead -> paused, waiting for 'continue'`、`lead: continue after danger`、`lead: no 'continue' in 2 min -> stuck`、`lead: owner gone for 30 s -> target_lost`；hub `chat_in … shortcut=lead|continue`、`event lead_paused reason= cmd_id=`、`chat_out … plain=true`。
+- 【任务单 22】下界（2026-10-28，guide-3 §3.2）：
+  - 固定短语"我们去下界 / 去下界 / 去下界吧 / 带我去下界"（Shortcuts.isGoNether）：hub 先按最新快照数黑曜石（≥ 10）和打火石（≥ 1），不够直接回"去下界要 10 块黑曜石和 1 个打火石：黑曜石现在 N 块，还差 M 块，没有打火石，凑齐了再叫我。"不开计划；够了回一句并开固定四步计划 build_portal → ask_owner（"门搭好了，点吗？"）→ light_portal → enter_portal（铁规矩 4：点火前一定问过主人）。模型自己拆也行（plan_examples 教了），四个新动作都是工具（27 个），ask_owner 只在计划里（PLANNABLE 有、ACTIONS 没有）。"找要塞"固定短语 → explore。
+  - 图纸：`knowledge/blueprints/nether_portal.yaml`（block / frame / corners / inside / light / enter，相对坐标，门框在 x-y 平面），Knowledge.blueprint 按修改时间热重载，坏了为 null → build_portal 合成 stuck（note no_blueprint）。hub 在 dispatchNext 把图纸填进 build_portal 的 args。
+  - 两边传送门：build_portal 成功后 hub 按当前维度记 portal_overworld / portal_nether（task_result，32 格去重）；下界那边的门由地标扫描看见 nether_portal 方块自动记；去过下界 / 末地仍由快照 dim 变化记（任务单 17），没有另做 dim_change 事件。
+  - 模组：`PortalLogic`（纯逻辑：findSite / order / standingSpots / inReach）+ Executor 的四个任务（见 §7.1）；换维度时 `BaritoneBridge.applyDimensionSettings`：下界 / 末地 maxFallHeightNoWater 3 → 2（allowParkour 本来就关着）；`LandmarkScanner.lastFound / lastFoundAtMs` 给 explore 看。打架按 19 暂停：build / light / enter 恢复时重设目标和放置状态，explore 恢复时重发 explore。
+  - 珍珠：末影人在 never 名单上，plan_examples 教模型回"珍珠得你来，或者去和猪灵换"。
+  - 日志：hub `chat_in … shortcut=go_nether`、`ask_owner plan_id= index=`、`chat_in … shortcut=ask_owner_yes|ask_owner_no`、`ask_owner_timeout`、`build_portal: no blueprint`；模组 `build_portal: origin= axis= blocks= scaffold= stand=`、`build_portal: place X at P via S FACE -> result`、`build_portal: X placed at P (i/n)`、`build_portal: frame complete|incomplete`、`light_portal: flint on P -> result|lit`、`enter_portal: walking into P from DIM|arrived in DIM`、`explore started|found X|5 min, nothing`、`baritone dim settings dim= maxFallHeightNoWater=`。
 
 
 

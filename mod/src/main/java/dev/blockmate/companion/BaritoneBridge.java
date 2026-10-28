@@ -53,6 +53,18 @@ public final class BaritoneBridge {
     }
 
     /** 立刻停下一切（断线、stop 都用它）。返回 Baritone 的返回值。 */
+    /** 任务单 22：下界 / 末地岩浆多，掉落容忍从 3 格改 2 格；回主世界改回 3。换维度时调。 */
+    public static void applyDimensionSettings(String dim) {
+        try {
+            Settings s = BaritoneAPI.getSettings();
+            boolean risky = "minecraft:the_nether".equals(dim) || "minecraft:the_end".equals(dim);
+            s.maxFallHeightNoWater.value = risky ? 2 : 3;
+            CompanionMod.LOG.info(CompanionMod.TAG + "baritone dim settings dim={} maxFallHeightNoWater={}", dim, s.maxFallHeightNoWater.value);
+        } catch (Throwable t) {
+            CompanionMod.LOG.warn(CompanionMod.TAG + "baritone dim settings failed: {}", t.toString());
+        }
+    }
+
     public static boolean cancelEverything() {
         try {
             boolean r = BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().cancelEverything();

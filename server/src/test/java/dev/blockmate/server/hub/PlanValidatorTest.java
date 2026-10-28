@@ -123,4 +123,15 @@ class PlanValidatorTest {
         assertFalse(PlanValidator.validate(JsonParser.parseString("""
                 {"goal":"x","steps":[{"command":"continue","args":{}}]}""").getAsJsonObject(), RULES).ok(), "continue 不能进计划");
     }
+
+    @Test
+    void 任务单22_ask_owner要say_其余四个无参() {
+        assertTrue(PlanValidator.validate(JsonParser.parseString("""
+                {"goal":"去下界","steps":[{"command":"build_portal","args":{}},{"command":"ask_owner","args":{"say":"点吗？"}},
+                 {"command":"light_portal","args":{}},{"command":"enter_portal","args":{}},{"command":"explore","args":{}}]}""").getAsJsonObject(), RULES).ok());
+        PlanValidator.Validated bad = PlanValidator.validate(JsonParser.parseString("""
+                {"goal":"去下界","steps":[{"command":"ask_owner","args":{}}]}""").getAsJsonObject(), RULES);
+        assertFalse(bad.ok());
+        assertTrue(bad.errors().get(0).contains("say"), bad.errors().get(0));
+    }
 }

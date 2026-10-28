@@ -38,6 +38,8 @@ public final class Knowledge {
     private MobRules mobs = MobRules.empty();
     private FileTime mobsMtime;
     private boolean mobsWarned;
+    private final Map<String, Blueprint> blueprints = new java.util.HashMap<>();
+    private final Map<String, FileTime> blueprintMtimes = new java.util.HashMap<>();
 
     public Knowledge(Path dir) {
         this.dir = dir;
@@ -198,6 +200,33 @@ public final class Knowledge {
             }
         }
         return mobs;
+    }
+
+    /** 图纸（任务单 22）：knowledge/blueprints/<name>.yaml，按修改时间热重载；缺失或坏了返回 null 并记 warn。 */
+    public synchronized Blueprint blueprint(String name) {
+        if (dir == null) {
+            return null;
+        }
+        Path p = dir.resolve("blueprints").resolve(name + ".yaml");
+        if (!Files.exists(p)) {
+            log.warn("knowledge blueprint missing: {}", p);
+            return null;
+        }
+        try {
+            FileTime mtime = Files.getLastModifiedTime(p);
+            if (!mtime.equals(blueprintMtimes.get(name))) {
+                blueprintMtimes.put(name, mtime);
+                Blueprint bp = Blueprint.parse(Files.readString(p, StandardCharsets.UTF_8));
+                blueprints.put(name, bp);
+                log.info("knowledge loaded file=blueprints/{}.yaml block={} frame={} corners={}", name, bp.block(), bp.frame().size(),
+                        bp.corners().size());
+            }
+            return blueprints.get(name);
+        } catch (IOException | RuntimeException e) {
+            log.warn("knowledge blueprint {} read failed: {}", name, e.getMessage());
+            blueprints.remove(name);
+            return null;
+        }
     }
 
     static MobRules parseMobs(String yamlText) {

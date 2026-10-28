@@ -166,6 +166,7 @@ public final class PlanValidator {
             case DELIVER -> missing(a, "item") != null ? missing(a, "item") : positive(a, "count");
             case PICK_UP, CRAFT -> missing(a, "item");
             case USE_FURNACE -> missing(a, "input");
+            case ASK_OWNER -> missing(a, "say");
             case FIGHT -> {
                 String m = missing(a, "kind");
                 if (m != null) {

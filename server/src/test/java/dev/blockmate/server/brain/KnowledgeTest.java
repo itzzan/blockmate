@@ -116,4 +116,36 @@ class KnowledgeTest {
             assertTrue(r.hostile().stream().noneMatch(s -> s.contains("creeper") || s.contains("enderman") || s.contains("spider") && !s.contains("cave")));
         }
     }
+
+    @Test
+    void 任务单22_图纸() throws Exception {
+        Knowledge k = new Knowledge(dir);
+        assertTrue(k.blueprint("nether_portal") == null, "没有图纸目录就是 null");
+        Files.createDirectories(dir.resolve("blueprints"));
+        Files.writeString(dir.resolve("blueprints").resolve("nether_portal.yaml"), """
+                block: obsidian
+                frame: [[1, 0, 0], [2, 0, 0]]
+                corners: [[0, 0, 0]]
+                inside: [[1, 1, 0]]
+                light: [1, 0, 0]
+                enter: [1, 1, 0]
+                """);
+        Blueprint bp = k.blueprint("nether_portal");
+        assertEquals("minecraft:obsidian", bp.block());
+        assertEquals(2, bp.frame().size());
+        assertEquals(java.util.List.of(1, 1, 0), bp.enter());
+        assertEquals("minecraft:obsidian", bp.toArgs().get("block").getAsString());
+        assertEquals(2, bp.toArgs().getAsJsonArray("frame").size());
+        Files.writeString(dir.resolve("blueprints").resolve("bad.yaml"), "frame: 1\n");
+        assertTrue(k.blueprint("bad") == null, "坏图纸是 null");
+        Path repo = Path.of("..", "knowledge");
+        if (Files.exists(repo.resolve("blueprints").resolve("nether_portal.yaml"))) {
+            Blueprint r = new Knowledge(repo).blueprint("nether_portal");
+            assertEquals(10, r.frame().size());
+            assertEquals(4, r.corners().size());
+            assertEquals(6, r.inside().size());
+            assertEquals(java.util.List.of(1, 0, 0), r.light());
+            assertEquals(java.util.List.of(1, 1, 0), r.enter());
+        }
+    }
 }

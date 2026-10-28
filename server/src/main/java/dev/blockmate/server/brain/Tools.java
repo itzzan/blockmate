@@ -25,11 +25,12 @@ public final class Tools {
     /** 动作工具：会变成发给模组的 command（第一阶段 7 个 + 任务单 11 加的 10 个单步工具）。 */
     public static final Set<String> ACTIONS = Set.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver",
             "report_status", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home",
-            "remember_place", "use_furnace", "fight", "lead");
+            "remember_place", "use_furnace", "fight", "lead", "build_portal", "light_portal", "enter_portal", "explore");
 
     /** 计划里允许出现的命令（不含 stop / cancel / report_status / rejoin）。 */
     public static final Set<String> PLANNABLE = Set.of("follow", "come_here", "wait_here", "pick_up", "deliver", "goto",
-            "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place", "use_furnace", "fight", "lead");
+            "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place", "use_furnace", "fight", "lead",
+            "build_portal", "light_portal", "enter_portal", "explore", "ask_owner");
 
     private static final Set<String> REQUIRED_KEYS = Set.of("item", "count", "text", "block", "goal", "steps", "action",
             "say", "name", "input", "kind");
@@ -99,6 +100,11 @@ public final class Tools {
         a.add(fn("lead", "带主人去一个地方：你走在前面，主人落后你就停下等。主人说\"带我去 xx\"\"带我回家\"时用；去记过的地点或看见过的地标给 place，去坐标给 x/y/z", Map.of(
                 "x", prop("number", "坐标 x"), "y", prop("number", "坐标 y"), "z", prop("number", "坐标 z"),
                 "place", prop("string", "地点名，如 home / 村庄 / 矿洞；给了 place 就不用坐标"))));
+        // ---- 任务单 22：下界 ----
+        a.add(fn("build_portal", "按图纸在脚边搭下界传送门的门框（要 10 块黑曜石，角用 4 块黑曜石或泥土 / 圆石垫），搭好不点火", Map.of()));
+        a.add(fn("light_portal", "拿打火石点刚搭好的门。点火之前必须先用计划里的 ask_owner 问过主人", Map.of()));
+        a.add(fn("enter_portal", "走进 8 格内的传送门，到另一边再回来说", Map.of()));
+        a.add(fn("explore", "在附近探路找要塞（下界找下界要塞，主世界找要塞），看见就停下；主人落后 16 格会等，最多 5 分钟", Map.of()));
         a.add(makePlan());
         a.add(remember());
         return a;

@@ -142,6 +142,23 @@ public final class Executor implements AbstractGameEventListener {
         int leadPauseStart;
         int ownerMissingSince = -1;
         int lastDangerCheckTick;
+        // 传送门 / 探路（任务单 22）
+        List<PortalLogic.Placement> portalPlan;
+        int portalIndex;
+        PortalLogic.Site portalSite;
+        String portalBlock;
+        String scaffoldId;
+        List<PortalLogic.Cell> scaffoldCells = List.of();
+        int scaffoldIndex;
+        int portalPlaced;
+        int portalRetry;
+        PortalLogic.Cell portalInside;
+        PortalLogic.Cell portalLight;
+        List<PortalLogic.Cell> frameCells = List.of();
+        BlockPos standPos;
+        String startDim;
+        long exploreStartMs;
+        boolean exploreWaiting;
         int collectStart;
         // craft / place / pickup_block（任务单 14）
         ArrayDeque<Click> clicks;
@@ -202,6 +219,20 @@ public final class Executor implements AbstractGameEventListener {
     private final Combat combat = new Combat(this::send);
     private boolean pausedForCombat;
     private Task pausedTask;
+    /** 任务单 22：最近搭的门（点火 / 进门用）；换维度时 Baritone 参数跟着换。 */
+    private record PortalMemory(PortalLogic.Site site, PortalLogic.Cell light, PortalLogic.Cell inside, String dim) {
+    }
+    private PortalMemory lastPortal;
+    private String lastDim;
+    private static final int PORTAL_WALK_TIMEOUT_TICKS = 400;
+    private static final int PORTAL_REACH_TIMEOUT_TICKS = 200;
+    private static final int SCAFFOLD_BREAK_TIMEOUT_TICKS = 200;
+    private static final int LIGHT_CONFIRM_TICKS = 40;
+    private static final int ENTER_TIMEOUT_TICKS = 1200;
+    private static final int EXPLORE_TIMEOUT_TICKS = 6000;
+    private static final int EXPLORE_REISSUE_TICKS = 60;
+    private static final List<String> SCAFFOLD_CANDIDATES = List.of("minecraft:cobblestone", "minecraft:dirt", "minecraft:netherrack",
+            "minecraft:cobbled_deepslate", "minecraft:stone", "minecraft:oak_planks");
     private IBaritone listeningOn;
 
     /** hello 下发的白名单（任务单 12）；没收到之前全不许。 */
@@ -306,6 +337,10 @@ public final class Executor implements AbstractGameEventListener {
             case SLEEP -> startSleep(env.id(), cmd.args(), mc);
             case FIGHT -> startFight(env.id(), cmd.args(), mc);
             case LEAD -> startLead(env.id(), cmd.args(), mc);
+            case BUILD_PORTAL -> startBuildPortal(env.id(), cmd.args(), mc);
+            case LIGHT_PORTAL -> startLightPortal(env.id(), mc);
+            case ENTER_PORTAL -> startEnterPortal(env.id(), mc);
+            case EXPLORE -> startExplore(env.id(), mc);
             case CONTINUE -> {
                 // 任务单 21：不占任务槽；带路因危险停着就接着走
                 send(MessageType.ACK, Ack.accepted(env.id()));
@@ -529,6 +564,12 @@ public final class Executor implements AbstractGameEventListener {
         if (mc.player == null || mc.level == null) {
             return;
         }
+        // 任务单 22：换了维度就换 Baritone 的参数
+        String dimNow = Observer.dim(mc);
+        if (dimNow != null && !dimNow.equals(lastDim)) {
+            lastDim = dimNow;
+            BaritoneBridge.applyDimensionSettings(dimNow);
+        }
         // 任务单 19：自保跑在所有任务前面；"停"最高优先，先收手
         if (combat.active() && current != null && current.name == CommandName.STOP) {
             combat.stop(mc, mc.player, tick, "stop command");
@@ -570,6 +611,10 @@ public final class Executor implements AbstractGameEventListener {
             case SLEEP -> tickSleep(mc, me);
             case FIGHT -> tickFight(mc, me);
             case LEAD -> tickLead(mc, me);
+            case BUILD_PORTAL -> tickBuildPortal(mc, me);
+            case LIGHT_PORTAL -> tickLightPortal(mc, me);
+            case ENTER_PORTAL -> tickEnterPortal(mc, me);
+            case EXPLORE -> tickExplore(mc, me);
             case PICKUP_BLOCK -> {
                 if (current.internal) {
                     tickBedPickup(mc, me);
@@ -638,9 +683,15 @@ public final class Executor implements AbstractGameEventListener {
                     b.getFollowProcess().pickup(stack -> want == null || want.equals(idOf(stack)));
                 }
             }
-            case GOTO, COME_HERE, DELIVER, STOP, WAIT_HERE, REJOIN, LEAD -> {
+            case GOTO, COME_HERE, DELIVER, STOP, WAIT_HERE, REJOIN, LEAD, ENTER_PORTAL, BUILD_PORTAL, LIGHT_PORTAL -> {
                 t.lastGoal = null;
                 t.lastReplanTick = 0;
+                t.waitSince = -1;
+            }
+            case EXPLORE -> {
+                if (b != null) {
+                    b.getExploreProcess().explore(me.getBlockX(), me.getBlockZ());
+                }
             }
             default -> {
                 CompanionMod.LOG.info(CompanionMod.TAG + "task {} can't resume after combat -> stuck", t.name.wire());
@@ -1862,6 +1913,500 @@ public final class Executor implements AbstractGameEventListener {
             if (idle) {
                 setGoal(b, t, goalPos(null, t), 2);
             }
+        }
+    }
+
+    // ---------------- 任务单 22：传送门与探路 ----------------
+
+    private static PortalLogic.Cell cellOf(BlockPos p) {
+        return new PortalLogic.Cell(p.getX(), p.getY(), p.getZ());
+    }
+
+    private static BlockPos posOf(PortalLogic.Cell c) {
+        return new BlockPos(c.x(), c.y(), c.z());
+    }
+
+    private static Pos protoPos(PortalLogic.Cell c) {
+        return new Pos(c.x(), c.y(), c.z());
+    }
+
+    private static PortalLogic.Probe portalProbe(Minecraft mc) {
+        return new PortalLogic.Probe() {
+            @Override
+            public boolean isFree(int x, int y, int z) {
+                var st = mc.level.getBlockState(new BlockPos(x, y, z));
+                return st.isAir() || st.canBeReplaced();
+            }
+
+            @Override
+            public boolean isSolidTop(int x, int y, int z) {
+                BlockPos bp = new BlockPos(x, y, z);
+                return mc.level.getBlockState(bp).isFaceSturdy(mc.level, bp, Direction.UP);
+            }
+        };
+    }
+
+    private static String pickScaffold(LocalPlayer me, int n) {
+        for (String id : SCAFFOLD_CANDIDATES) {
+            if (countItem(me, id) >= n) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    /** 站位：门框前方 2 格的两个候选里挑一个站得住的；都不行就原地。 */
+    private static BlockPos pickStand(Minecraft mc, PortalLogic.Site site, BlockPos feet) {
+        PortalLogic.Probe p = portalProbe(mc);
+        for (PortalLogic.Cell c : PortalLogic.standingSpots(site)) {
+            if (p.isFree(c.x(), c.y(), c.z()) && p.isFree(c.x(), c.y() + 1, c.z()) && p.isSolidTop(c.x(), c.y() - 1, c.z())) {
+                return posOf(c);
+            }
+        }
+        return feet;
+    }
+
+    /** 走到站位：到了（1.5 格内）或 20 秒没到就开始放。返回 true 表示还在走。 */
+    private boolean walkingToStand(Task t, Minecraft mc, LocalPlayer me) {
+        if (t.opStage != 0) {
+            return false;
+        }
+        double dist = me.position().distanceTo(Vec3.atCenterOf(t.standPos));
+        if (dist <= 1.5 || tick - t.opStartTick > PORTAL_WALK_TIMEOUT_TICKS) {
+            BaritoneBridge.cancelEverything();
+            t.opStage = 1;
+            t.opStartTick = tick;
+            t.waitSince = -1;
+            CompanionMod.LOG.info(CompanionMod.TAG + "portal: at stand (dist {}), start", round(dist));
+            return false;
+        }
+        IBaritone b = BaritoneBridge.baritone();
+        if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS && !b.getPathingBehavior().isPathing()
+                && !b.getCustomGoalProcess().isActive()) {
+            setGoal(b, t, t.standPos, 1);
+        }
+        return true;
+    }
+
+    private void startBuildPortal(String id, JsonObject args, Minecraft mc) {
+        cancelCurrent();
+        BaritoneBridge.cancelEverything();
+        send(MessageType.ACK, Ack.accepted(id));
+        Command.BuildPortalArgs a = args == null ? null : ProtocolCodec.gson().fromJson(args, Command.BuildPortalArgs.class);
+        if (a == null || a.block() == null || a.frame() == null || a.frame().isEmpty()) {
+            finish(Result.failed(id, Reason.STUCK, new Result.BuildPortalDetail(null, 0, "no_blueprint")));
+            return;
+        }
+        LocalPlayer me = mc.player;
+        String block = Rules.normalize(a.block());
+        int have = countItem(me, block);
+        int need = a.frame().size();
+        List<List<Integer>> corners = a.corners() == null ? List.of() : a.corners();
+        List<List<Integer>> inside = a.inside() == null ? List.of() : a.inside();
+        if (have < need) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: {} {} < {} -> no_materials", block, have, need);
+            finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of(block, need - have))));
+            return;
+        }
+        String scaffold = null;
+        if (!corners.isEmpty() && have < need + corners.size()) {
+            scaffold = pickScaffold(me, corners.size());
+            if (scaffold == null) {
+                CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: no corner blocks (need {} obsidian or scaffold) -> no_materials", corners.size());
+                finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of("minecraft:cobblestone", corners.size()))));
+                return;
+            }
+        }
+        PortalLogic.Cell feet = cellOf(me.blockPosition());
+        PortalLogic.Site site = PortalLogic.findSite(portalProbe(mc), feet, a.frame(), corners, inside).orElse(null);
+        if (site == null) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: no flat 4x5 spot within 3 blocks -> stuck");
+            finish(Result.failed(id, Reason.STUCK, new Result.BuildPortalDetail(null, 0, "no_flat_ground")));
+            return;
+        }
+        Task t = new Task(id, CommandName.BUILD_PORTAL, args, tick);
+        t.portalSite = site;
+        t.portalBlock = block;
+        t.scaffoldId = scaffold;
+        t.frameCells = PortalLogic.absAll(site.origin(), a.frame(), site.axis());
+        List<PortalLogic.Cell> cornerCells = PortalLogic.absAll(site.origin(), corners, site.axis());
+        t.scaffoldCells = scaffold != null ? cornerCells : List.of();
+        List<PortalLogic.Cell> all = new ArrayList<>(t.frameCells);
+        all.addAll(cornerCells);
+        t.portalPlan = PortalLogic.order(all, site.origin(), site.axis());
+        t.portalInside = a.enter() != null ? PortalLogic.abs(site.origin(), a.enter(), site.axis())
+                : inside.isEmpty() ? null : PortalLogic.abs(site.origin(), inside.get(0), site.axis());
+        t.portalLight = a.light() != null ? PortalLogic.abs(site.origin(), a.light(), site.axis()) : null;
+        t.standPos = pickStand(mc, site, me.blockPosition());
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        t.opStage = 0;
+        t.opStartTick = tick;
+        current = t;
+        IBaritone b = BaritoneBridge.baritone();
+        if (b != null) {
+            setGoal(b, t, t.standPos, 1);
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: origin={} axis={} blocks={} scaffold={} stand={}", site.origin(), site.axis(),
+                t.portalPlan.size(), scaffold, t.standPos);
+    }
+
+    private void tickBuildPortal(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        if (walkingToStand(t, mc, me)) {
+            return;
+        }
+        if (t.opStage == 1) {
+            if (t.portalIndex >= t.portalPlan.size()) {
+                t.opStage = 2;
+                t.scaffoldIndex = 0;
+                t.opBreaking = false;
+                t.opStartTick = tick;
+                return;
+            }
+            PortalLogic.Placement pl = t.portalPlan.get(t.portalIndex);
+            boolean isCorner = t.scaffoldCells.contains(pl.target());
+            String item = isCorner ? t.scaffoldId : t.portalBlock;
+            Block want = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(item));
+            BlockPos tp = posOf(pl.target());
+            if (want != null && mc.level.getBlockState(tp).is(want)) {
+                if (!isCorner) {
+                    t.portalPlaced++;
+                }
+                t.portalIndex++;
+                t.portalRetry = 0;
+                t.waitSince = -1;
+                t.opStartTick = tick;
+                CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: {} placed at {} ({}/{})", item, tp, t.portalIndex, t.portalPlan.size());
+                return;
+            }
+            if (!PortalLogic.inReach(me.getX(), me.getEyeY(), me.getZ(), pl.target())) {
+                IBaritone b = BaritoneBridge.baritone();
+                if (t.waitSince != -3) {
+                    t.waitSince = -3;
+                    t.opStartTick = tick;
+                    if (b != null) {
+                        b.getCustomGoalProcess().setGoalAndPath(new GoalNear(tp, 3));
+                    }
+                } else if (tick - t.opStartTick > PORTAL_REACH_TIMEOUT_TICKS) {
+                    BaritoneBridge.cancelEverything();
+                    BreakGuard.closeAll("portal unreachable");
+                    finish(Result.failed(t.id, Reason.STUCK, new Result.BuildPortalDetail(null, t.portalPlaced, "place_failed")));
+                }
+                return;
+            }
+            if (t.waitSince == -3) {
+                BaritoneBridge.cancelEverything();
+                t.waitSince = -1;
+            }
+            if (t.waitSince == -1) {
+                int src = findInventoryIndex(me, item);
+                if (src < 0) {
+                    BreakGuard.closeAll("portal no item");
+                    finish(Result.failed(t.id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of(item, 1))));
+                    return;
+                }
+                equip(mc, me, src);
+                t.waitSince = -2;
+                t.opStartTick = tick;
+                return;
+            }
+            if (t.waitSince == -2) {
+                if (tick - t.opStartTick < PLACE_SETTLE_TICKS) {
+                    return;
+                }
+                BlockPos sp = posOf(pl.support());
+                Vec3 hit = new Vec3(sp.getX() + 0.5 + pl.dx() * 0.5, sp.getY() + 0.5 + pl.dy() * 0.5, sp.getZ() + 0.5 + pl.dz() * 0.5);
+                Direction face = pl.dy() > 0 ? Direction.UP : pl.dx() > 0 ? Direction.EAST : pl.dx() < 0 ? Direction.WEST
+                        : pl.dz() > 0 ? Direction.SOUTH : Direction.NORTH;
+                me.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, hit);
+                BreakGuard.allowPlace("portal " + item);
+                var res = mc.gameMode.useItemOn(me, InteractionHand.MAIN_HAND, new BlockHitResult(hit, face, sp, false));
+                me.swing(InteractionHand.MAIN_HAND);
+                t.waitSince = tick;
+                CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: place {} at {} via {} {} -> {}", item, tp, sp, face, res);
+                return;
+            }
+            if (tick - t.waitSince >= PLACE_CONFIRM_TICKS) {
+                if (t.portalRetry < 1) {
+                    t.portalRetry++;
+                    t.waitSince = -1;
+                    CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: {} not there yet, retry", tp);
+                } else {
+                    BreakGuard.closeAll("portal place failed");
+                    finish(Result.failed(t.id, Reason.STUCK, new Result.BuildPortalDetail(null, t.portalPlaced, "place_failed")));
+                }
+            }
+            return;
+        }
+        if (t.opStage == 2) {
+            if (t.scaffoldIndex >= t.scaffoldCells.size()) {
+                mc.gameMode.stopDestroyBlock();
+                t.opStage = 3;
+                return;
+            }
+            BlockPos bp = posOf(t.scaffoldCells.get(t.scaffoldIndex));
+            if (mc.level.getBlockState(bp).isAir()) {
+                mc.gameMode.stopDestroyBlock();
+                t.scaffoldIndex++;
+                t.opBreaking = false;
+                t.opStartTick = tick;
+                return;
+            }
+            if (!t.opBreaking) {
+                int pick = findPickaxe(me);
+                if (pick >= 0) {
+                    equip(mc, me, pick);
+                }
+                Block sb = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(t.scaffoldId));
+                BreakGuard.allowBreakOnly(sb == null ? List.of() : List.of(sb), "portal scaffold");
+                me.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(bp));
+                mc.gameMode.startDestroyBlock(bp, Direction.UP);
+                t.opBreaking = true;
+                t.opStartTick = tick;
+            }
+            mc.gameMode.continueDestroyBlock(bp, Direction.UP);
+            me.swing(InteractionHand.MAIN_HAND);
+            if (tick - t.opStartTick > SCAFFOLD_BREAK_TIMEOUT_TICKS) {
+                mc.gameMode.stopDestroyBlock();
+                CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: scaffold at {} won't break, leaving it", bp);
+                t.scaffoldIndex++;
+                t.opBreaking = false;
+            }
+            return;
+        }
+        // stage 3：检查门框
+        BreakGuard.closeAll("portal done");
+        Block ob = ForgeRegistries.BLOCKS.getValue(ResourceLocation.tryParse(t.portalBlock));
+        int ok = 0;
+        for (PortalLogic.Cell c : t.frameCells) {
+            if (ob != null && mc.level.getBlockState(posOf(c)).is(ob)) {
+                ok++;
+            }
+        }
+        if (ok < t.frameCells.size()) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: frame incomplete {}/{}", ok, t.frameCells.size());
+            finish(Result.failed(t.id, Reason.STUCK, new Result.BuildPortalDetail(null, t.portalPlaced, "frame_incomplete")));
+            return;
+        }
+        lastPortal = new PortalMemory(t.portalSite, t.portalLight, t.portalInside, Observer.dim(mc));
+        CompanionMod.LOG.info(CompanionMod.TAG + "build_portal: frame complete, inside={} light={}", t.portalInside, t.portalLight);
+        finish(Result.ok(t.id, new Result.BuildPortalDetail(t.portalInside == null ? null : protoPos(t.portalInside), t.portalPlaced, null)));
+    }
+
+    private void startLightPortal(String id, Minecraft mc) {
+        cancelCurrent();
+        BaritoneBridge.cancelEverything();
+        send(MessageType.ACK, Ack.accepted(id));
+        LocalPlayer me = mc.player;
+        if (lastPortal == null || lastPortal.light() == null || lastPortal.inside() == null || !java.util.Objects.equals(lastPortal.dim(), Observer.dim(mc))) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "light_portal: no portal built here -> item_not_found");
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND));
+            return;
+        }
+        if (findInventoryIndex(me, "minecraft:flint_and_steel") < 0) {
+            finish(Result.failed(id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of("minecraft:flint_and_steel", 1))));
+            return;
+        }
+        Task t = new Task(id, CommandName.LIGHT_PORTAL, null, tick);
+        t.portalSite = lastPortal.site();
+        t.portalLight = lastPortal.light();
+        t.portalInside = lastPortal.inside();
+        t.standPos = pickStand(mc, lastPortal.site(), me.blockPosition());
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        t.opStage = 0;
+        t.opStartTick = tick;
+        current = t;
+        IBaritone b = BaritoneBridge.baritone();
+        if (b != null) {
+            setGoal(b, t, t.standPos, 1);
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "light_portal: light={} inside={}", t.portalLight, t.portalInside);
+    }
+
+    private void tickLightPortal(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        if (walkingToStand(t, mc, me)) {
+            return;
+        }
+        BlockPos inside = posOf(t.portalInside);
+        if (mc.level.getBlockState(inside).is(Blocks.NETHER_PORTAL)) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "light_portal: lit");
+            finish(Result.ok(t.id, new Result.LightPortalDetail(protoPos(t.portalInside))));
+            return;
+        }
+        if (t.waitSince == -1) {
+            int src = findInventoryIndex(me, "minecraft:flint_and_steel");
+            if (src < 0) {
+                finish(Result.failed(t.id, Reason.NO_MATERIALS, new Result.CraftDetail(0, Map.of("minecraft:flint_and_steel", 1))));
+                return;
+            }
+            equip(mc, me, src);
+            t.waitSince = -2;
+            t.opStartTick = tick;
+            return;
+        }
+        if (t.waitSince == -2) {
+            if (tick - t.opStartTick < PLACE_SETTLE_TICKS) {
+                return;
+            }
+            BlockPos sp = posOf(t.portalLight);
+            Vec3 hit = new Vec3(sp.getX() + 0.5, sp.getY() + 1.0, sp.getZ() + 0.5);
+            me.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, hit);
+            var res = mc.gameMode.useItemOn(me, InteractionHand.MAIN_HAND, new BlockHitResult(hit, Direction.UP, sp, false));
+            me.swing(InteractionHand.MAIN_HAND);
+            t.waitSince = tick;
+            CompanionMod.LOG.info(CompanionMod.TAG + "light_portal: flint on {} -> {}", sp, res);
+            return;
+        }
+        if (tick - t.waitSince >= LIGHT_CONFIRM_TICKS) {
+            if (t.portalRetry < 1) {
+                t.portalRetry++;
+                t.waitSince = -1;
+            } else {
+                CompanionMod.LOG.info(CompanionMod.TAG + "light_portal: no portal block appeared -> stuck");
+                finish(Result.failed(t.id, Reason.STUCK));
+            }
+        }
+    }
+
+    private void startEnterPortal(String id, Minecraft mc) {
+        cancelCurrent();
+        BaritoneBridge.cancelEverything();
+        send(MessageType.ACK, Ack.accepted(id));
+        LocalPlayer me = mc.player;
+        BlockPos target = null;
+        if (lastPortal != null && lastPortal.inside() != null && java.util.Objects.equals(lastPortal.dim(), Observer.dim(mc))
+                && mc.level.getBlockState(posOf(lastPortal.inside())).is(Blocks.NETHER_PORTAL)) {
+            target = posOf(lastPortal.inside());
+        } else {
+            BlockPos feet = me.blockPosition();
+            double best = Double.MAX_VALUE;
+            BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+            for (int dx = -8; dx <= 8; dx++) {
+                for (int dy = -4; dy <= 4; dy++) {
+                    for (int dz = -8; dz <= 8; dz++) {
+                        if (mc.level.getBlockState(p.set(feet.getX() + dx, feet.getY() + dy, feet.getZ() + dz)).is(Blocks.NETHER_PORTAL)) {
+                            double d = dx * dx + dy * dy + dz * dz;
+                            if (d < best) {
+                                best = d;
+                                target = p.immutable();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (target == null) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "enter_portal: no portal within 8 -> item_not_found");
+            finish(Result.failed(id, Reason.ITEM_NOT_FOUND));
+            return;
+        }
+        Task t = new Task(id, CommandName.ENTER_PORTAL, null, tick);
+        t.portalInside = cellOf(target);
+        t.startDim = Observer.dim(mc);
+        t.stuck = new StuckDetector(STUCK_WINDOW_TICKS, STUCK_MIN_MOVE);
+        current = t;
+        IBaritone b = BaritoneBridge.baritone();
+        if (b != null) {
+            setGoal(b, t, target, 0);
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "enter_portal: walking into {} from {}", target, t.startDim);
+    }
+
+    private void tickEnterPortal(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        String dim = Observer.dim(mc);
+        if (dim != null && !dim.equals(t.startDim)) {
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "enter_portal: arrived in {}", dim);
+            finish(Result.ok(t.id, new Result.EnterPortalDetail(dim)));
+            return;
+        }
+        if (tick - t.startTick > ENTER_TIMEOUT_TICKS) {
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "enter_portal: 60 s and still here -> stuck");
+            finish(Result.failed(t.id, Reason.STUCK));
+            return;
+        }
+        BlockPos inside = posOf(t.portalInside);
+        if (mc.level.getBlockState(me.blockPosition()).is(Blocks.NETHER_PORTAL)) {
+            BaritoneBridge.cancelEverything(); // 站在门里别动，4 秒后传送
+            return;
+        }
+        if (!mc.level.getBlockState(inside).is(Blocks.NETHER_PORTAL)) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "enter_portal: portal at {} is gone -> item_not_found", inside);
+            finish(Result.failed(t.id, Reason.ITEM_NOT_FOUND));
+            return;
+        }
+        IBaritone b = BaritoneBridge.baritone();
+        if (b != null && tick - t.lastReplanTick >= REPLAN_EVERY_TICKS && !b.getPathingBehavior().isPathing()
+                && !b.getCustomGoalProcess().isActive()) {
+            setGoal(b, t, inside, 0);
+        }
+    }
+
+    private void startExplore(String id, Minecraft mc) {
+        cancelCurrent();
+        IBaritone b = BaritoneBridge.baritone();
+        if (b == null) {
+            send(MessageType.ACK, Ack.rejected(id));
+            return;
+        }
+        send(MessageType.ACK, Ack.accepted(id));
+        LocalPlayer me = mc.player;
+        Task t = new Task(id, CommandName.EXPLORE, null, tick);
+        t.exploreStartMs = System.currentTimeMillis();
+        current = t;
+        b.getExploreProcess().explore(me.getBlockX(), me.getBlockZ());
+        CompanionMod.LOG.info(CompanionMod.TAG + "explore started from ({}, {}) dim={}", me.getBlockX(), me.getBlockZ(), Observer.dim(mc));
+    }
+
+    private void tickExplore(Minecraft mc, LocalPlayer me) {
+        Task t = current;
+        IBaritone b = BaritoneBridge.baritone();
+        LandmarkLogic.Found f = LandmarkScanner.lastFound;
+        if (f != null && LandmarkScanner.lastFoundAtMs > t.exploreStartMs && ("fortress".equals(f.kind()) || "stronghold".equals(f.kind()))) {
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "explore: found {} at ({}, {}, {})", f.kind(), Math.round(f.x()), Math.round(f.y()), Math.round(f.z()));
+            finish(Result.ok(t.id, new Result.ExploreDetail(f.kind(), new Pos(f.x(), f.y(), f.z()))));
+            return;
+        }
+        if (tick - t.startTick > EXPLORE_TIMEOUT_TICKS) {
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "explore: 5 min, nothing -> item_not_found");
+            finish(Result.failed(t.id, Reason.ITEM_NOT_FOUND));
+            return;
+        }
+        Player owner = findOwner(mc);
+        String dim = Observer.dim(mc);
+        if (owner != null) {
+            double od = me.distanceTo(owner);
+            if (t.exploreWaiting) {
+                if (od <= LeadLogic.nearLimit(dim)) {
+                    t.exploreWaiting = false;
+                    if (b != null) {
+                        b.getExploreProcess().explore(me.getBlockX(), me.getBlockZ());
+                    }
+                    send(MessageType.PROGRESS, new Progress(t.id, "resumed", round(od), Observer.pos(me)));
+                } else {
+                    me.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES, owner.getEyePosition());
+                    return;
+                }
+            } else if (od > LeadLogic.farLimit(dim)) {
+                t.exploreWaiting = true;
+                BaritoneBridge.cancelEverything();
+                send(MessageType.PROGRESS, new Progress(t.id, "waiting", round(od), Observer.pos(me)));
+                CompanionMod.LOG.info(CompanionMod.TAG + "explore: owner {} behind -> waiting", round(od));
+                return;
+            }
+        }
+        if (tick - t.lastProgressTick >= 200) {
+            t.lastProgressTick = tick;
+            send(MessageType.PROGRESS, new Progress(t.id, "exploring", null, Observer.pos(me)));
+        }
+        if (b != null && tick - t.lastReplanTick >= EXPLORE_REISSUE_TICKS && !b.getExploreProcess().isActive()) {
+            t.lastReplanTick = tick;
+            b.getExploreProcess().explore(me.getBlockX(), me.getBlockZ());
         }
     }
 

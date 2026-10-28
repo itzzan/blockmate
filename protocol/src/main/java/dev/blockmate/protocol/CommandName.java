@@ -33,7 +33,17 @@ public enum CommandName {
     /** 任务单 21：带路——走在前面，主人落后就等；参数同 goto，另带 landmark（到了说"到村庄了"）。 */
     @SerializedName("lead") LEAD("lead"),
     /** 任务单 21：带路因危险停下后主人说"继续"；不占任务槽。 */
-    @SerializedName("continue") CONTINUE("continue");
+    @SerializedName("continue") CONTINUE("continue"),
+    /** 任务单 22：按图纸搭下界传送门框（黑曜石 10 块，角用黑曜石或临时脚手架）。 */
+    @SerializedName("build_portal") BUILD_PORTAL("build_portal"),
+    /** 任务单 22：拿打火石点刚搭的门。 */
+    @SerializedName("light_portal") LIGHT_PORTAL("light_portal"),
+    /** 任务单 22：走进 8 格内的传送门直到换了维度。 */
+    @SerializedName("enter_portal") ENTER_PORTAL("enter_portal"),
+    /** 任务单 22：Baritone 探索，看见要塞 / 遗迹要塞就停；主人落后 16 格等。 */
+    @SerializedName("explore") EXPLORE("explore"),
+    /** 任务单 22：计划里的"问主人"步，hub 自己处理不下发；主人说"点 / 好 / 去"继续，"不"整个作废。 */
+    @SerializedName("ask_owner") ASK_OWNER("ask_owner");
 
     private final String wire;
 
@@ -47,7 +57,7 @@ public enum CommandName {
 
     /** 是否占用任务槽（stop 和 cancel 是对槽位的操作，不占槽；remember_place 只是记一笔，也不占）。 */
     public boolean occupiesSlot() {
-        return this != STOP && this != CANCEL && this != REMEMBER_PLACE && this != CONTINUE;
+        return this != STOP && this != CANCEL && this != REMEMBER_PLACE && this != CONTINUE && this != ASK_OWNER;
     }
 
     /** 按 wire 名找，找不到返回 null。 */

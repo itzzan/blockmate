@@ -149,6 +149,12 @@ public final class TaskSlot {
             case FIGHT -> timeouts.fightS() * 1000L; // 任务单 20
             case LEAD -> 0L; // 任务单 21：像 follow 一样不超时，危险停下 2 分钟由模组自己按 stuck 结束
             case CONTINUE -> 5000L;
+            // 任务单 22
+            case BUILD_PORTAL -> 180_000L;
+            case LIGHT_PORTAL -> 30_000L;
+            case ENTER_PORTAL -> 60_000L;
+            case EXPLORE -> 330_000L;
+            case ASK_OWNER -> 0L; // hub 自己处理，不下发
             case SLEEP -> 90_000L;
         };
     }

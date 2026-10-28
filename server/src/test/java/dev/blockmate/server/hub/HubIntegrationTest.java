@@ -344,7 +344,7 @@ class HubIntegrationTest {
         String lastMsg = decision.messages().get(decision.messages().size() - 1).content();
         assertTrue(lastMsg.contains("你在主世界"), "状态句在最后一条 user 里：" + lastMsg);
         assertFalse(decision.messages().get(0).content().contains("你在主世界"), "system 里不再有状态句");
-        assertEquals(23, decision.tools().size(), "决策请求带全部工具");
+        assertEquals(27, decision.tools().size(), "决策请求带全部工具");
 
         // c. 跟我来：假执行器打印"收到 follow"，3 秒后结果到达，网页收到"来了"
         ui.send(MessageType.CHAT, new Chat("跟我来"));
@@ -551,6 +551,40 @@ class HubIntegrationTest {
         assertTrue(model.requests.subList(before, model.requests.size()).stream()
                 .allMatch(rq -> rq.tools() == null || rq.tools().size() <= 1), "带我回家 / 继续不该调模型决策");
         assertTrue(app.memory().eventsBetween(0, Long.MAX_VALUE, java.util.Set.of()).stream().anyMatch(e -> "lead_paused".equals(e.kind())));
+    }
+
+    /** 任务单 22：计划里的"问主人"步——它说一句停下，"点"继续、"不"作废；"我们去下界"材料不够先说缺什么。 */
+    @Test
+    void 任务单22_问主人_点就继续_不就作废_去下界先看材料() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        JsonObject args = new JsonObject();
+        args.addProperty("goal", "搭门点火");
+        args.add("steps", JsonParser.parseString("""
+                [{"command":"ask_owner","args":{"say":"门搭好了，点吗？"},"why":"铁规矩 4"},{"command":"come_here","args":{},"why":"x"}]""").getAsJsonArray());
+        model.makePlanArgs = args;
+        ui.send(MessageType.CHAT, new Chat("去弄 20 根木头回来"));
+        String asked = replyContaining(ui, "点吗", 8000);
+        assertTrue(asked != null, "没等到问主人那句");
+        assertTrue(mockConsole.stream().noneMatch(l -> l.contains("收到 come_here")), "问着的时候不往下走");
+        ui.send(MessageType.CHAT, new Chat("点"));
+        assertEquals("好嘞。", replyContaining(ui, "好嘞", 5000));
+        waitFor(() -> mockConsole.stream().anyMatch(l -> l.contains("收到 come_here")), 5000, "说了点就走下一步");
+        waitFor(() -> app.memory().recentPlans(1).size() == 1 && "done".equals(app.memory().recentPlans(1).get(0).outcome()), 15_000, "计划做完");
+        // 第二次：拒绝
+        ui.send(MessageType.CHAT, new Chat("去弄 20 根木头回来"));
+        assertTrue(replyContaining(ui, "点吗", 8000) != null);
+        ui.send(MessageType.CHAT, new Chat("不要"));
+        assertEquals("好，那先不做了。", replyContaining(ui, "不做了", 5000));
+        waitFor(() -> app.memory().recentPlans(1).size() == 1 && "aborted".equals(app.memory().recentPlans(1).get(0).outcome()), 5000, "计划作废");
+        assertEquals(1, mockConsole.stream().filter(l -> l.contains("收到 come_here")).count(), "作废了就不派第二步");
+        // 去下界：假执行器没有黑曜石，先说缺什么，不开计划
+        ui.send(MessageType.CHAT, new Chat("我们去下界"));
+        String lack = replyContaining(ui, "黑曜石", 5000);
+        assertTrue(lack != null && lack.contains("打火石"), "要说清缺什么：" + lack);
     }
 
     /** 一直收回复，直到某条包含 text；超时返回 null。 */

@@ -123,12 +123,12 @@ class BrainUnitTest {
     @Test
     void 工具定义() {
         JsonArray all = Tools.all();
-        assertEquals(23, all.size());
+        assertEquals(27, all.size());
         List<String> names = all.asList().stream()
                 .map(e -> ((JsonObject) e).getAsJsonObject("function").get("name").getAsString()).toList();
         assertEquals(List.of("follow", "come_here", "wait_here", "stop", "pick_up", "deliver", "report_status",
                 "report_progress", "goto", "mine", "collect", "craft", "place", "pickup_block", "eat", "sleep", "go_home", "remember_place",
-                "use_furnace", "fight", "lead", "make_plan", "remember_preference"), names);
+                "use_furnace", "fight", "lead", "build_portal", "light_portal", "enter_portal", "explore", "make_plan", "remember_preference"), names);
         JsonObject deliver = all.get(5).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         assertTrue(deliver.getAsJsonObject("properties").has("count"));
         JsonObject mine = all.get(9).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
@@ -137,7 +137,7 @@ class BrainUnitTest {
         JsonObject craft = all.get(11).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         assertEquals(List.of("item"), craft.getAsJsonArray("required").asList().stream().map(e -> e.getAsString()).toList(),
                 "craft 的 count 可不填");
-        JsonObject makePlan = all.get(21).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
+        JsonObject makePlan = all.get(25).getAsJsonObject().getAsJsonObject("function").getAsJsonObject("parameters");
         JsonObject stepItem = makePlan.getAsJsonObject("properties").getAsJsonObject("steps").getAsJsonObject("items");
         assertTrue(stepItem.getAsJsonObject("properties").getAsJsonObject("command").getAsJsonArray("enum").asList().stream()
                 .map(e -> e.getAsString()).toList().containsAll(List.of("mine", "deliver", "go_home")));

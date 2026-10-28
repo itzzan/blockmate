@@ -88,6 +88,25 @@ public record Result(String commandId, ResultStatus status, Reason reason, JsonO
     }
 
     /** use_furnace：烧出来的数量。 */
+    /**
+     * 任务单 22：build_portal 的结果。inside 是门里那格（点火 / 进门用），placed 放了几块；
+     * 失败时 note ∈ no_flat_ground（3 格内没平地）/ frame_incomplete（放完检查少了）/ place_failed（某块放不上），缺材料用 CraftDetail。
+     */
+    public record BuildPortalDetail(Pos inside, int placed, String note) {
+    }
+
+    /** 任务单 22：light_portal 的结果——门里那格。 */
+    public record LightPortalDetail(Pos inside) {
+    }
+
+    /** 任务单 22：enter_portal 的结果——到了哪个维度。 */
+    public record EnterPortalDetail(String dim) {
+    }
+
+    /** 任务单 22：explore 的结果——看见了什么（fortress / stronghold）和在哪。 */
+    public record ExploreDetail(String found, Pos pos) {
+    }
+
     /** 任务单 20：fight 的结果——打死了几只（失败时也带，表示打了一半）。 */
     public record FightDetail(int killed) {
     }

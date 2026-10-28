@@ -93,4 +93,18 @@ class ShortcutsTest {
         assertTrue(!Shortcuts.isContinue("继续挖"));
         assertTrue(!Shortcuts.isContinue(null));
     }
+
+    @Test
+    void 任务单22_去下界_找要塞_问主人的回答() {
+        assertTrue(Shortcuts.isGoNether("我们去下界！"));
+        assertTrue(Shortcuts.isGoNether("去下界吧"));
+        assertTrue(!Shortcuts.isGoNether("下界好玩吗"));
+        assertEquals(CommandName.EXPLORE, Shortcuts.match("找要塞").orElseThrow());
+        assertEquals(CommandName.EXPLORE, Shortcuts.match("去找要塞。").orElseThrow());
+        assertTrue(Shortcuts.isAskYes("点"));
+        assertTrue(Shortcuts.isAskYes("点吧"));
+        assertTrue(Shortcuts.isAskYes("好"));
+        assertTrue(!Shortcuts.isAskYes("不要"));
+        assertTrue(Shortcuts.isReject("不要"));
+    }
 }

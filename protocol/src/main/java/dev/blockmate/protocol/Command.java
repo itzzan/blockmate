@@ -1,5 +1,7 @@
 package dev.blockmate.protocol;
 
+import java.util.List;
+
 import com.google.gson.JsonObject;
 
 /** hub → mc 的命令（细则 7.1）。args 按命令不同，用 {@link #argsAs} 取成对应的 record。 */
@@ -85,6 +87,18 @@ public record Command(CommandName name, JsonObject args) {
     }
 
     /** use_furnace：把 input 用 fuel 烧 count 个（默认全部）；附近要有熔炉。 */
+    /**
+     * 任务单 22：build_portal 的参数——图纸（knowledge/blueprints/nether_portal.yaml，hub 读了随命令发）。
+     * 坐标都是相对原点的 [dx, dy, dz]，门框在 x-y 平面（模组找不到平地会试着转 90 度）；light 是点火时点的那块，enter 是走进去的那格。
+     */
+    public record BuildPortalArgs(String block, List<List<Integer>> frame, List<List<Integer>> corners, List<List<Integer>> inside,
+                                  List<Integer> light, List<Integer> enter) {
+    }
+
+    /** 任务单 22：ask_owner 的参数——对主人说的那句。 */
+    public record AskOwnerArgs(String say) {
+    }
+
     /** 任务单 21：lead 的参数——hub 已把地点名换成坐标；place 是地点名，landmark 是地标的中文名（到了好说"到村庄了"），都可空。 */
     public record LeadArgs(Double x, Double y, Double z, String place, String landmark) {
     }

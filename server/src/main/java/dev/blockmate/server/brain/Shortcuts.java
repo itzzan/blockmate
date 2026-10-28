@@ -54,7 +54,12 @@ public final class Shortcuts {
             Map.entry("带我回家", CommandName.LEAD),
             Map.entry("带我回家吧", CommandName.LEAD),
             Map.entry("带我去家", CommandName.LEAD),
-            Map.entry("领我回家", CommandName.LEAD));
+            Map.entry("领我回家", CommandName.LEAD),
+            // 任务单 22
+            Map.entry("找要塞", CommandName.EXPLORE),
+            Map.entry("去找要塞", CommandName.EXPLORE),
+            Map.entry("找找要塞", CommandName.EXPLORE),
+            Map.entry("找下界要塞", CommandName.EXPLORE));
 
     private Shortcuts() {
     }
@@ -79,6 +84,22 @@ public final class Shortcuts {
             "我们到哪了", "我们到哪儿了", "现在到哪了", "现在到哪儿了", "到哪了", "到哪儿了", "我们现在到哪了", "我们现在到哪儿了",
             "进度", "进度呢", "什么进度", "现在什么进度", "我们什么进度", "我们现在什么进度", "走到哪了", "我们走到哪了",
             "现在在哪个阶段", "我们在哪个阶段", "在哪个阶段");
+
+    // ---------- 任务单 22：去下界（固定四步）和"问主人"的回答 ----------
+
+    private static final java.util.Set<String> GO_NETHER = java.util.Set.of("我们去下界", "去下界", "去下界吧", "带我去下界", "我们去下界吧",
+            "下界走起", "去地狱", "我们去地狱");
+    private static final java.util.Set<String> ASK_YES = java.util.Set.of("点", "点吧", "点火", "点燃", "点了", "点上", "去", "好", "好的", "行", "可以",
+            "去吧", "嗯", "好嘞", "ok", "开始吧", "继续");
+
+    public static boolean isGoNether(String text) {
+        return GO_NETHER.contains(normalize(text));
+    }
+
+    /** "问主人"步骤的肯定回答：点 / 好 / 去 / 行…（拒绝用 isReject）。 */
+    public static boolean isAskYes(String text) {
+        return ASK_YES.contains(normalize(text).toLowerCase()) || isAccept(text);
+    }
 
     // ---------- 任务单 21：带路因危险停下后的"继续"（只在带路停着时用；平时交给模型） ----------
 
