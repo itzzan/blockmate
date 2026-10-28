@@ -1,0 +1,104 @@
+# 怪物名单（知识层，guide-3 任务单 19）：伙伴能打什么、只躲什么、永远不碰什么。
+#
+# 铁规矩 5：战斗只对敌对生物。代码里只有一条判断："在 hostile 名单上才打"，没有别的例外；
+# 要改"打不打末影人"这类事改这个文件，不改代码。
+# 后台在伙伴连上来（hello）时随白名单下发，改了会自动重新读并推给在线的伙伴（任务单 19 起不用重连）。
+# 写法：一行一个实体 id，没写 minecraft: 前缀后台会补。
+#
+#   hostile：可以打（它靠到 3 格内或先动手就还手）。
+#   flee_only：只躲不打（苦力怕炸、幻翼飞、监守者打不过）。
+#   never：永远不碰，哪怕它先动手（玩家、村民、所有动物、铁傀儡…）。
+#   hostile_at_night：夜里才算怪（蜘蛛白天不主动咬人）。
+#   hostile_if_attacked：它先动手才算怪（蜘蛛白天、末影人、僵尸猪灵没激怒时都不碰）。
+# 同一个 id 出现在多段时：never 最大，其次 flee_only，再是 hostile；at_night / if_attacked 只对不在前三段里的生效。
+
+hostile:
+  - minecraft:zombie
+  - minecraft:husk
+  - minecraft:drowned
+  - minecraft:zombie_villager
+  - minecraft:skeleton
+  - minecraft:stray
+  - minecraft:wither_skeleton
+  - minecraft:cave_spider
+  - minecraft:witch
+  - minecraft:slime
+  - minecraft:magma_cube
+  - minecraft:blaze
+  - minecraft:ghast
+  - minecraft:silverfish
+  - minecraft:endermite
+  - minecraft:guardian
+  - minecraft:elder_guardian
+  - minecraft:pillager
+  - minecraft:vindicator
+  - minecraft:evoker
+  - minecraft:vex
+  - minecraft:ravager
+  - minecraft:hoglin
+  - minecraft:zoglin
+  - minecraft:piglin
+  - minecraft:piglin_brute
+  - minecraft:shulker
+  - minecraft:wither
+  - minecraft:ender_dragon
+
+flee_only:
+  - minecraft:creeper
+  - minecraft:phantom
+  - minecraft:warden
+
+never:
+  - minecraft:player
+  - minecraft:villager
+  - minecraft:wandering_trader
+  - minecraft:iron_golem
+  - minecraft:snow_golem
+  - minecraft:allay
+  - minecraft:armor_stand
+  # 动物（含中立的）
+  - minecraft:cow
+  - minecraft:mooshroom
+  - minecraft:pig
+  - minecraft:sheep
+  - minecraft:chicken
+  - minecraft:horse
+  - minecraft:donkey
+  - minecraft:mule
+  - minecraft:skeleton_horse
+  - minecraft:zombie_horse
+  - minecraft:llama
+  - minecraft:trader_llama
+  - minecraft:camel
+  - minecraft:cat
+  - minecraft:ocelot
+  - minecraft:wolf
+  - minecraft:parrot
+  - minecraft:rabbit
+  - minecraft:fox
+  - minecraft:panda
+  - minecraft:polar_bear
+  - minecraft:bee
+  - minecraft:turtle
+  - minecraft:axolotl
+  - minecraft:dolphin
+  - minecraft:squid
+  - minecraft:glow_squid
+  - minecraft:cod
+  - minecraft:salmon
+  - minecraft:tropical_fish
+  - minecraft:pufferfish
+  - minecraft:bat
+  - minecraft:frog
+  - minecraft:tadpole
+  - minecraft:goat
+  - minecraft:strider
+  - minecraft:sniffer
+
+hostile_at_night:
+  - minecraft:spider
+
+hostile_if_attacked:
+  - minecraft:spider
+  - minecraft:enderman
+  - minecraft:zombified_piglin

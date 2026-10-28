@@ -9,7 +9,7 @@
   const el = {
     conn: $('conn'), online: $('online'), task: $('task'), health: $('health'), dim: $('dim'), inv: $('inv'),
     model: $('model'), keeper: $('keeper'), keeperStart: $('keeper-start'), keeperStop: $('keeper-stop'),
-    owner: $('owner'), auto: $('auto'), autoWrap: $('auto-wrap'), idle: $('idle'),
+    owner: $('owner'), auto: $('auto'), autoWrap: $('auto-wrap'), idle: $('idle'), combat: $('combat'),
     plan: $('plan'), planGoal: $('plan-goal'), planOutcome: $('plan-outcome'), planSteps: $('plan-steps'),
     stop: $('stop'), chat: $('chat'), prefs: $('prefs'), prefsList: $('prefs-list'), prefsCount: $('prefs-count'),
     composer: $('composer'), input: $('input'), send: $('send'),
@@ -93,6 +93,7 @@
   function renderStatus(s) {
     if (!s) return;
     if (typeof s.idle === 'boolean') el.idle.checked = s.idle; // 任务单 18：主动说话开关
+    if (typeof s.combat === 'string') el.combat.value = s.combat; // 任务单 19：战斗开关
     const c = s.companion || {};
     if (!c.online) pill(el.online, '离线', 'pill-bad');
     else if (c.in_world === false) pill(el.online, '客户端在，未进服', 'pill-warn');
@@ -310,6 +311,11 @@
     const on = el.idle.checked;
     if (!send('idle_control', { enabled: on })) { el.idle.checked = !on; return; }
     system(on ? '已打开主动说话：没人说话时它每分钟想一次要不要提议或提醒' : '已关闭主动说话：它只答不问');
+  });
+  el.combat.addEventListener('change', () => {
+    const mode = el.combat.value;
+    if (!send('combat_control', { mode })) return;
+    system({ off: '战斗已关：被打它只会跑', defend: '战斗：只自保，怪到跟前或先打它才还手', protect: '战斗：保护你（任务单 20 做好前和只自保一样）' }[mode] || '战斗开关已改');
   });
 
   window.addEventListener('beforeunload', () => { closedByUs = true; if (ws) ws.close(); });

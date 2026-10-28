@@ -189,6 +189,10 @@ public final class Executor implements AbstractGameEventListener {
     private final Rejoiner rejoiner;
     private Task current;
     private int tick;
+    /** 任务单 19：自保；打架时任务暂停（pausedTask 记的是暂停时的那个任务）。 */
+    private final Combat combat = new Combat(this::send);
+    private boolean pausedForCombat;
+    private Task pausedTask;
     private IBaritone listeningOn;
 
     /** hello 下发的白名单（任务单 12）；没收到之前全不许。 */
@@ -219,7 +223,11 @@ public final class Executor implements AbstractGameEventListener {
     }
 
     public TaskInfo currentTaskInfo() {
-        return current == null ? null : new TaskInfo(current.id, current.name, "running");
+        return current == null ? null : new TaskInfo(current.id, current.name, pausedForCombat ? "paused" : "running");
+    }
+
+    public boolean inCombat() {
+        return combat.active();
     }
 
     /** 进入世界时调用：向当前的 Baritone 注册路径事件监听（只注册一次）。 */
@@ -490,6 +498,20 @@ public final class Executor implements AbstractGameEventListener {
         if (mc.player == null || mc.level == null) {
             return;
         }
+        // 任务单 19：自保跑在所有任务前面；"停"最高优先，先收手
+        if (combat.active() && current != null && current.name == CommandName.STOP) {
+            combat.stop(mc, mc.player, tick, "stop command");
+        }
+        boolean fighting = combat.tick(mc, mc.player, rules, tick);
+        if (fighting) {
+            if (!pausedForCombat || current != pausedTask) {
+                pauseForCombat(mc, mc.player);
+            }
+            return;
+        }
+        if (pausedForCombat) {
+            resumeAfterCombat(mc, mc.player);
+        }
         tickPassive(mc, mc.player);
         if (current == null) {
             return;
@@ -524,6 +546,75 @@ public final class Executor implements AbstractGameEventListener {
             default -> {
             }
         }
+    }
+
+    // ---------------- 任务单 19：打架时暂停、打完恢复 ----------------
+
+    /** 打架开始（或打架中来了新任务）：松开使用键、关菜单、停 Baritone，发一条 progress "combat"；任务对象留着。 */
+    private void pauseForCombat(Minecraft mc, LocalPlayer me) {
+        pausedForCombat = true;
+        pausedTask = current;
+        releaseUseKey();
+        if (current != null) {
+            closeMenuIfOpen(current);
+        }
+        BaritoneBridge.cancelEverything();
+        if (current != null && !current.internal) {
+            send(MessageType.PROGRESS, new Progress(current.id, "combat", null, Observer.pos(me)));
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "task {} paused for combat", current == null ? "none" : current.name.wire());
+    }
+
+    /**
+     * 打完了：长任务把 Baritone 的活重新派下去（跟随 / 挖 / 捡 / 走到），菜单类的短任务（合成、放、熔炉、吃、睡）中途断了接不上，
+     * 按 stuck 结束让后台的计划逻辑决定重试还是跳过；内部任务（自动吃、收床）直接丢掉。
+     */
+    private void resumeAfterCombat(Minecraft mc, LocalPlayer me) {
+        pausedForCombat = false;
+        pausedTask = null;
+        Task t = current;
+        if (t == null) {
+            return;
+        }
+        if (t.internal) {
+            current = null;
+            return;
+        }
+        IBaritone b = BaritoneBridge.baritone();
+        if (t.stuck != null) {
+            t.stuck.reset();
+        }
+        switch (t.name) {
+            case FOLLOW -> {
+                if (b != null) {
+                    String owner = ClientConfig.OWNER_NAME.get();
+                    b.getFollowProcess().follow(e -> e != me && e instanceof Player p && owner.equals(p.getGameProfile().getName()));
+                }
+            }
+            case MINE -> {
+                if (b != null && t.block != null) {
+                    b.getMineProcess().mine(t.block);
+                }
+            }
+            case PICK_UP, COLLECT -> {
+                if (b != null) {
+                    String want = t.item;
+                    b.getFollowProcess().pickup(stack -> want == null || want.equals(idOf(stack)));
+                }
+            }
+            case GOTO, COME_HERE, DELIVER, STOP, WAIT_HERE, REJOIN -> {
+                t.lastGoal = null;
+                t.lastReplanTick = 0;
+            }
+            default -> {
+                CompanionMod.LOG.info(CompanionMod.TAG + "task {} can't resume after combat -> stuck", t.name.wire());
+                closeMenuIfOpen(t);
+                finish(Result.failed(t.id, Reason.STUCK));
+                BaritoneBridge.cancelEverything();
+                return;
+            }
+        }
+        CompanionMod.LOG.info(CompanionMod.TAG + "task {} resumed after combat", t.name.wire());
     }
 
     // ---------------- 任务单 15：被动行为（没任务时自己做） ----------------

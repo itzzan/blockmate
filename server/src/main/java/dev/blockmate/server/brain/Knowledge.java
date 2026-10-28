@@ -1,6 +1,7 @@
 package dev.blockmate.server.brain;
 
 import dev.blockmate.protocol.BlockRules;
+import dev.blockmate.protocol.MobRules;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
@@ -34,6 +35,9 @@ public final class Knowledge {
     private Progression progression = Progression.empty();
     private FileTime progressionMtime;
     private boolean progressionWarned;
+    private MobRules mobs = MobRules.empty();
+    private FileTime mobsMtime;
+    private boolean mobsWarned;
 
     public Knowledge(Path dir) {
         this.dir = dir;
@@ -158,6 +162,51 @@ public final class Knowledge {
             }
         }
         return progression;
+    }
+
+    /**
+     * mobs.yaml 的怪物名单（任务单 19）：hostile / flee_only / never / hostile_at_night / hostile_if_attacked。
+     * 缺失或坏了 = 空名单 = 什么都不打（安全默认），warn 一次。按修改时间热重载。
+     */
+    public synchronized MobRules mobRules() {
+        if (dir == null) {
+            return mobs;
+        }
+        Path p = dir.resolve("mobs.yaml");
+        if (!Files.exists(p)) {
+            if (!mobsWarned) {
+                log.warn("knowledge file missing: {}（没有怪物名单，伙伴什么都不打）", p);
+                mobsWarned = true;
+            }
+            return MobRules.empty();
+        }
+        FileTime mtime;
+        try {
+            mtime = Files.getLastModifiedTime(p);
+        } catch (IOException e) {
+            return mobs;
+        }
+        if (mobsMtime == null || !mtime.equals(mobsMtime)) {
+            mobsMtime = mtime;
+            try {
+                mobs = parseMobs(Files.readString(p, StandardCharsets.UTF_8));
+                log.info("knowledge loaded file=mobs.yaml hostile={} flee_only={} never={}", mobs.hostile().size(),
+                        mobs.fleeOnly().size(), mobs.never().size());
+            } catch (IOException | RuntimeException e) {
+                mobs = MobRules.empty();
+                log.warn("knowledge mobs.yaml read failed: {}（按空名单处理，什么都不打）", e.getMessage());
+            }
+        }
+        return mobs;
+    }
+
+    static MobRules parseMobs(String yamlText) {
+        Object loaded = new Yaml().load(yamlText);
+        if (!(loaded instanceof Map<?, ?> m)) {
+            return MobRules.empty();
+        }
+        return new MobRules(idList(m.get("hostile")), idList(m.get("flee_only")), idList(m.get("never")),
+                idList(m.get("hostile_at_night")), idList(m.get("hostile_if_attacked")));
     }
 
     static BlockRules parseRules(String yamlText) {

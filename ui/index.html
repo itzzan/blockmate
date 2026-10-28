@@ -28,6 +28,9 @@
       <label id="idle-wrap" class="toggle" title="没人说话时它每分钟想一次要不要主动说点什么（提议、天黑提醒）。关掉就只答不问">
         <input id="idle" type="checkbox"> 主动说话
       </label>
+      <label id="combat-wrap" class="toggle" title="战斗开关：关 = 被打只会跑；只自保 = 怪到跟前或先打它才还手；保护你 = 还会挡在你和怪中间（任务单 20 才做，现在和只自保一样）">
+        战斗 <select id="combat"><option value="off">关</option><option value="defend">只自保</option><option value="protect">保护你</option></select>
+      </label>
       <button id="stop" class="btn btn-stop" type="button" title="立刻停下，不经过模型">停</button>
     </div>
   </header>

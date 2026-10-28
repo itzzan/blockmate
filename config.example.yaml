@@ -46,3 +46,8 @@ auto_presence:
 idle:
   enabled: true
   interval_s: 60
+
+# 任务单 19：战斗开关。off = 被打只会跑；defend = 怪到跟前或先打它才还手（默认）；protect = 还会挡在主人前面（任务单 20）。
+# 网页上的下拉存在数据库里，设过就盖过这里。能打什么、绝不碰什么在 knowledge/mobs.yaml。
+combat:
+  mode: defend

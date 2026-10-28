@@ -58,8 +58,13 @@ public record Event(EventKind kind, String from, String text, Pos pos, String di
         return new Event(EventKind.LANDMARK, null, null, pos, dim, null, null, null, null, what);
     }
 
-    /** 任务单 17：看见了危险（第一版只有 lava）。 */
+    /** 任务单 17：看见了危险（第一版只有 lava）；任务单 19：what = overwhelmed（打不过了，正往主人跑）。 */
     public static Event danger(String what, Pos pos, String dim) {
         return new Event(EventKind.DANGER, null, null, pos, dim, null, null, null, null, what);
+    }
+
+    /** 任务单 19：打完一架。借用字段：what = 对手种类 id，reason = 结局，count = 用时毫秒，delta = 掉的血。 */
+    public static Event combat(String targetKind, String outcome, int ms, int damageTaken) {
+        return new Event(EventKind.COMBAT, null, null, null, null, outcome, null, damageTaken, ms, targetKind);
     }
 }

@@ -14,7 +14,10 @@ import dev.blockmate.protocol.Event;
 import dev.blockmate.protocol.Hello;
 import dev.blockmate.protocol.HelloOk;
 import dev.blockmate.protocol.KeeperCmd;
+import dev.blockmate.protocol.CombatControl;
 import dev.blockmate.protocol.IdleControl;
+import dev.blockmate.protocol.MobRules;
+import dev.blockmate.protocol.RulesUpdate;
 import dev.blockmate.protocol.KeeperControl;
 import dev.blockmate.protocol.KeeperStatus;
 import dev.blockmate.protocol.MessageType;
@@ -31,6 +34,7 @@ import dev.blockmate.protocol.Status;
 import dev.blockmate.protocol.TaskInfo;
 import dev.blockmate.server.Config;
 import dev.blockmate.server.brain.Landmarks;
+import dev.blockmate.server.brain.MobNames;
 import dev.blockmate.server.brain.Progression;
 import dev.blockmate.server.memory.StoredWorldFact;
 import dev.blockmate.server.brain.Brain;
@@ -139,6 +143,10 @@ public final class Hub {
     private String planSource = "owner";
     private String pendingPlanSource = "owner";
 
+    // ---------- 任务单 19：战斗开关 ----------
+    /** off / defend / protect；设置表 combat_mode 盖过 config 的 combat.mode。 */
+    private String combatMode;
+
     public Hub(Config cfg, Memory memory, Brain brain, ItemNames names, ScheduledExecutorService exec,
                ExecutorService brainExec) {
         this(cfg, memory, brain, Knowledge.empty(), names, exec, brainExec);
@@ -161,6 +169,42 @@ public final class Hub {
         this.historyWindow = new HistoryWindow(cfg.historyN, cfg.historyN * 2);
         this.idle = new IdlePolicy(cfg.idle.intervalS() * 1000L);
         this.idleEnabled = "on".equals(memory.setting("idle_enabled").orElse(cfg.idle.enabled() ? "on" : "off"));
+        this.combatMode = validCombatMode(memory.setting("combat_mode").orElse(cfg.combat.mode()));
+    }
+
+    static String validCombatMode(String m) {
+        String v = m == null ? "" : m.strip().toLowerCase();
+        return v.equals("off") || v.equals("protect") ? v : "defend";
+    }
+
+    /** 任务单 19：网页改了战斗开关——存起来、推给在线的伙伴（不用重连）、状态条回显。 */
+    private void setCombatMode(String mode) {
+        combatMode = validCombatMode(mode);
+        memory.setSetting("combat_mode", combatMode);
+        log.info("combat_mode {}", combatMode);
+        pushRulesToMc();
+        pushStatus(true);
+    }
+
+    /** 规则整份重发给模组：白名单 + 怪物名单 + 战斗开关。 */
+    private void pushRulesToMc() {
+        if (mc == null) {
+            return;
+        }
+        MobRules mobs = knowledge.mobRules();
+        mc.send(envelope(MessageType.RULES, Peer.MC, new RulesUpdate(knowledge.blockRules(), mobs, combatMode)));
+        log.info("rules_pushed combat_mode={} hostile={}", combatMode, mobs.hostile().size());
+    }
+
+    private static String combatOutcomeZh(String outcome) {
+        return switch (outcome == null ? "" : outcome) {
+            case "killed" -> "打死了";
+            case "fled" -> "怪走了";
+            case "gave_up" -> "打不过跑了";
+            case "stopped" -> "被叫停了";
+            case "died" -> "它死了";
+            default -> outcome == null ? "不清楚" : outcome;
+        };
     }
 
     /** 所有模型调用都从这里进 brain 线程，顺便数着"模型忙不忙"（空闲循环只在模型空着时想）。 */
@@ -195,9 +239,10 @@ public final class Hub {
         mcOnline = true;
         lastSnapshot = null;
         BlockRules rules = knowledge.blockRules();
-        s.send(envelope(MessageType.HELLO, Peer.MC, HelloOk.mc(now(), rules)));
-        log.info("executor online player={} mod={} rules mineable={} placeable={}", hello.player(), hello.modVersion(),
-                rules.mineable().size(), rules.placeable().size());
+        MobRules mobs = knowledge.mobRules();
+        s.send(envelope(MessageType.HELLO, Peer.MC, HelloOk.mc(now(), rules, mobs, combatMode)));
+        log.info("executor online player={} mod={} rules mineable={} placeable={} hostile={} combat_mode={}", hello.player(),
+                hello.modVersion(), rules.mineable().size(), rules.placeable().size(), mobs.hostile().size(), combatMode);
         memory.saveEvent("executor_online", null, null, obj("player", hello.player()));
         pushStatus(true);
     }
@@ -418,9 +463,21 @@ public final class Hub {
             }
             case DANGER -> {
                 memory.saveEvent("danger", null, null, ProtocolCodec.toBody(ev));
-                if (ev.pos() != null) {
+                if ("overwhelmed".equals(ev.what())) {
+                    // 任务单 19：打不过了，正往主人（或出生点）跑
+                    notice("它打不过，正往你这边跑", "warn");
+                    log.info("event danger overwhelmed");
+                } else if (ev.pos() != null) {
                     recordFact(Landmarks.DANGER, null, ev.pos(), ev.dim(), "seen");
                 }
+            }
+            case COMBAT -> {
+                memory.saveEvent("combat", null, null, ProtocolCodec.toBody(ev));
+                int ms = ev.count() == null ? 0 : ev.count();
+                int dmg = ev.delta() == null ? 0 : ev.delta();
+                log.info("event combat target={} outcome={} ms={} damage={}", ev.what(), ev.reason(), ms, dmg);
+                notice("它和" + MobNames.name(ev.what()) + "打了一架：" + combatOutcomeZh(ev.reason()) + "，用了 "
+                        + Math.round(ms / 1000.0) + " 秒，掉了 " + dmg + " 血", "info");
             }
             default -> memory.saveEvent(ev.kind().name().toLowerCase(), null, null, ProtocolCodec.toBody(ev));
         }
@@ -887,6 +944,7 @@ public final class Hub {
             }
             case KEEPER_CONTROL -> keeperControl(ProtocolCodec.bodyAs(e, KeeperControl.class).action());
             case IDLE_CONTROL -> setIdleEnabled(ProtocolCodec.bodyAs(e, IdleControl.class).enabled());
+            case COMBAT_CONTROL -> setCombatMode(ProtocolCodec.bodyAs(e, CombatControl.class).mode());
             default -> log.debug("ui sent {} ignored", e.type());
         }
     }
@@ -1487,7 +1545,7 @@ public final class Hub {
         Status.KeeperState ks = keeper == null ? Status.KeeperState.disconnected(auto, ownerOnline)
                 : new Status.KeeperState(true, keeperStatus == null ? null : keeperStatus.running(), keeperDesired,
                         keeperStatus == null ? null : keeperStatus.gaveUp(), auto, ownerOnline);
-        return new Status(companion, task, ks, new Status.ModelState(modelOk), idleEnabled);
+        return new Status(companion, task, ks, new Status.ModelState(modelOk), idleEnabled, combatMode);
     }
 
     private void pushStatus(boolean force) {

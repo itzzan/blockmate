@@ -17,6 +17,8 @@ public enum EventKind {
     @SerializedName("bed_collected") BED_COLLECTED,
     /** 任务单 17：看见地标（what = village / portal_overworld / portal_nether / fortress / stronghold / end_portal，pos / dim 是地标位置）。 */
     @SerializedName("landmark") LANDMARK,
-    /** 任务单 17：看见危险（what = lava，pos / dim 是岩浆位置），带路和空闲提议用。 */
-    @SerializedName("danger") DANGER
+    /** 任务单 17：看见危险（what = lava，pos / dim 是岩浆位置），带路和空闲提议用；任务单 19 加 what = overwhelmed（打不过，正往主人跑）。 */
+    @SerializedName("danger") DANGER,
+    /** 任务单 19：打完一架。what = 对手种类，reason = 结局（killed / fled / gave_up / stopped / died），count = 用时毫秒，delta = 掉的血。 */
+    @SerializedName("combat") COMBAT
 }

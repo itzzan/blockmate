@@ -54,7 +54,8 @@
 
 | 类型 | 方向 | 含义 |
 | --- | --- | --- |
-| hello | mc → hub，hub → mc | 握手 |
+| hello | mc → hub，hub → mc | 握手；hub 的回复带 rules（白名单）、mobs（怪物名单）、combat_mode（任务单 19） |
+| rules | hub → mc | 任务单 19：规则变了（战斗开关 / 名单 / 白名单）整份重发，body = {rules, mobs, combat_mode}；模组只更新规则，不重发 snapshot / joined |
 | snapshot | mc → hub | 每 20 tick（1 秒）一条，"我现在看到什么" |
 | event | mc → hub | 有事发生时立刻发 |
 | command | hub → mc | 一条动作命令 |
@@ -79,6 +80,7 @@
 | notice | hub → ui | 固定的中文提示（模型超时、伙伴不在游戏里等） |
 | plan | hub → ui | 任务单 9 加：一句话拆成的多步计划和进度，每步状态变化时整条重发，网页画进度条 |
 | idle_control | ui → hub | 任务单 18：网页的"主动说话"开关，body.enabled；存设置表 idle_enabled，status 里带 idle 回显 |
+| combat_control | ui → hub | 任务单 19：战斗开关，body.mode ∈ off / defend / protect；存设置表 combat_mode，status 里带 combat 回显，并立刻用 rules 消息推给在线的伙伴 |
 
 ### 3.3 `/ws/keeper`：hub 与守护进程
 
@@ -173,7 +175,8 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | auto_eat | item, count | 任务单 15：没人叫、自己吃了一口；count 放吃完后的饥饿值 |
 | bed_collected | pos, dim | 任务单 15：睡醒后把自己放的床收回来了 |
 | landmark | what, pos, dim | 任务单 17：看见了地标。what ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal，pos 是地标的位置（不是自己的）。模组每 tick 扫一列（x 固定，z ±24、y ±8），49 tick 一遍、歇 50 tick，约每 5 秒一遍；村庄 = 钟或 24 格内 ≥ 2 个村民，传送门按维度分，下界砖 ≥ 20 块且在下界 = 下界要塞，苔石砖 + 石砖楼梯同时有且在主世界 = 要塞，末地传送门框 = 末地传送门；同种 100 格内只报一次（模组侧，重连清零） |
-| danger | what, pos, dim | 任务单 17：看见了危险，第一版只有 what=lava（8 格内岩浆 ≥ 20 块），32 格内只报一次 |
+| danger | what, pos, dim | 任务单 17：看见了危险，第一版只有 what=lava（8 格内岩浆 ≥ 20 块），32 格内只报一次；任务单 19 加 what=overwhelmed（打不过了，正往主人 / 出生点跑），hub 只提示不记事实 |
+| combat | what, reason, count, delta | 任务单 19：打完一架。借用字段：what = 对手种类 id，reason = 结局 killed / fled / gave_up / stopped / died，count = 用时毫秒，delta = 掉的血。hub 存事件、网页提示"它和僵尸打了一架：打死了，用了 12 秒，掉了 6 血" |
 
 【补丁 2026-10-22】模组侧两条行为：
 - 死亡画面停留 3 秒后模组自动"重生"（和按钮做的事一样），所以 death 之后会跟着 respawn + snapshot + joined；挂机被怪杀死不会一直停在死亡画面。画面一直不消失就每 3 秒再按一次。
@@ -356,6 +359,13 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
   - 接受 / 拒绝：固定短语（Shortcuts.isAccept：好 / 好的 / 去吧 / 行 / 可以 / 嗯 / ok …；isReject：不 / 不要 / 不用 / 等会 / 别 / 算了 / 先不 …），只在"上一条是它的提议且在 2 分钟内"时生效，平时这些词照旧交给模型。接受 → 直接回"好嘞，这就去。"并 `startPlan(goal, steps, msg_id, "idle")`（校验再过一遍，不在世界里就回做不了）；拒绝 → 回"好，那不提了。"（进安静模式时"好，那我不提了，你想干什么跟我说。"）。
   - 事件：idle_propose（source_message_id=那条主动消息）/ idle_remind / idle_accepted / idle_rejected；日志 `idle_think action=`、`idle_tick action=propose|remind|quiet [suppressed=cooldown|rejected_recently]`、`idle_rejected goal_hash= consecutive=`、`idle_quiet_mode on|off`、`idle_enabled on|off`、`chat_out … idle=true`、`chat_in … shortcut=idle_accept|idle_reject`。
   - 顺带（主人定）：blocks.yaml 可挖清单加钻石 / 金 / 红石 / 青金石 / 绿宝石矿（含深板岩变种，drops 和 needs_pickaxe 同步），黑曜石不加。
+- 【任务单 19】自保（2026-10-27，guide-3 §2.1）：
+  - 名单：`knowledge/mobs.yaml` 五段 hostile / flee_only / never / hostile_at_night / hostile_if_attacked（Knowledge.mobRules 热重载，缺失或坏了 = 空名单 = 什么都不打）。模组 `CombatLogic.classify`：never 最大，其次 flee_only，再 hostile；at_night 夜里才算怪（蜘蛛），if_attacked 它先动手才算怪（蜘蛛白天、末影人、僵尸猪灵）。代码里只有"在 hostile 名单上才打"。
+  - 开关：config `combat.mode`（默认 defend），设置表 `combat_mode` 盖过；随 hello 下发，改了用 rules 消息推给在线伙伴；protect 这一张和 defend 一样（任务单 20 才做保护）。
+  - 模组 `Combat` 每 tick 跑在执行器前：8 格内按实体种类 id 对名单，"被打了"= 受伤动画期间的最后伤害来源是怪；被打或怪到 3 格内开打，苦力怕 3 格内开躲（躲到 6 格外）。规则写死（`CombatLogic.decide`，按优先级）：苦力怕先躲 → 打了 30 秒或 10 秒掉 8 血放弃（发 danger overwhelmed，往主人跑，主人不在往出生点，最多 10 秒）→ 血 ≤ 6 有吃的吃一口再跑（一场只吃一次，食物换到快捷栏第 7 格）→ 血 ≤ 8 副手有盾举盾后退 3 格 2 秒（5 秒内不重复）→ 够得着（3.2 格）就挥（攻击冷却 ≥ 0.9，先换最好的剑到第 8 格，每次挥击前再过一遍名单，日志 `combat target= allowed=`）→ 够不着用 Baritone 靠近。8 格内 3 秒没怪算打完，发 combat 事件（killed / fled / gave_up / stopped / died）。开关 off 时整段不跑。
+  - 暂停恢复：打架期间执行器不 tick，当前任务留着（TaskInfo state=paused，发一条 progress "combat"，松使用键、关菜单、停 Baritone）；打完跟随 / 挖 / 捡 / 走到 把 Baritone 的活重新派下去，合成 / 放 / 熔炉 / 吃 / 睡这类菜单任务接不上按 stuck 结束（计划逻辑决定重试或跳过），内部任务丢掉。"停"命令最高优先：先收手再停。
+  - 日志（模组）：`combat start target= flee= health=`、`combat target= allowed=`、`combat shield up`、`combat eating`、`combat overwhelmed`、`combat end target= outcome= ms= damage= killed=`、`task X paused for combat` / `resumed after combat`。
+
 
 
 
@@ -423,6 +433,7 @@ CREATE VIRTUAL TABLE episodes_fts USING fts5(summary, content='episodes', conten
 - 删除消息：把 messages.deleted 置 1 并清空 text，同时删除 `source_message_id` 等于它的 events 和 preferences；当天的 episode 标记需要重算（下次触发时重写）。
 - 备份：每天 03:30 `VACUUM INTO 'data/backup/companion-YYYY-MM-DD.db'`，然后只保留最新 14 个文件。
 - 最近的任务（任务单 10）：表 `plans(id, goal, steps_json, outcome, started_ts, ended_ts, source_message_id)`，计划结束时写一行；给模型的 system 里带最近 5 个的"日期 目标：结局"。
+- 任务单 19：settings 加 `combat_mode`。
 - 任务单 18：messages 加列 `source TEXT`（null / idle），plans 加列 `source TEXT`（owner / idle），老库启动时 PRAGMA table_info 查缺就 ALTER TABLE 补；settings 加 `idle_enabled`。
 - 进度和世界事实（任务单 17）：表 `progress(stage PRIMARY KEY, reached_ts, notes)`，一个阶段第一次做完写一行，不退回，notes=owner_said 是主人口头记的；表 `world_facts(id PRIMARY KEY, kind, name, dim, x, y, z, ts, source)`，kind ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal / mine_site / danger，source ∈ owner_said / seen / task_result，name 是主人叫它的名字；没坐标的事实放 settings（`fact:visited_nether` / `fact:visited_end`，值是时间戳）。家和床仍在 places。
 - 地点（任务单 13）：表 `places(name PRIMARY KEY, dim, x, y, z, ts)`，remember_place 写入（同名覆盖），goto place / go_home 查它；全部地点进 system 提示。hub 日志 `place_remembered name= dim=`、`place_resolved name= for=`、`place_unknown name= known=`。任务单 15：sleep 成功时 hub 把 detail.bed_pos 记成 bed，没记过 home 就同时记成 home（日志 `place_remembered name=bed … home_set=`）。
@@ -469,6 +480,8 @@ auto_presence:
 idle:                    # 任务单 18：空闲循环
   enabled: true          # 默认开；网页上的"主动说话"开关存在设置表里，盖过这里
   interval_s: 60         # 没人说话时每隔这么多秒想一次要不要主动说点什么（每次一个模型调用）
+combat:                  # 任务单 19：战斗开关
+  mode: defend           # off 不打只跑 / defend 只自保 / protect 保护主人（任务单 20）；网页下拉存设置表，盖过这里
 ```
 
 persona.md 由 Brain 每次请求前检查修改时间，变了就重新读，不用重启。

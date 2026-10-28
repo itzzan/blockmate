@@ -80,4 +80,40 @@ class KnowledgeTest {
         assertEquals(19, r.needsPickaxe().size());
         assertEquals(6, r.avoidFood().size());
     }
+
+    @Test
+    void 任务单19_mobs_yaml() throws Exception {
+        Knowledge k = new Knowledge(dir);
+        assertTrue(k.mobRules().hostile().isEmpty(), "文件不存在就是空名单");
+        Files.writeString(dir.resolve("mobs.yaml"), """
+                hostile: [zombie, minecraft:skeleton, zombie]
+                flee_only: [creeper]
+                never: [player, Villager]
+                hostile_at_night: [spider]
+                hostile_if_attacked: [spider, enderman]
+                """);
+        dev.blockmate.protocol.MobRules m = k.mobRules();
+        assertEquals(java.util.List.of("minecraft:zombie", "minecraft:skeleton"), m.hostile());
+        assertEquals(java.util.List.of("minecraft:creeper"), m.fleeOnly());
+        assertEquals(java.util.List.of("minecraft:player", "minecraft:villager"), m.never());
+        assertEquals(java.util.List.of("minecraft:spider"), m.hostileAtNight());
+        assertEquals(java.util.List.of("minecraft:spider", "minecraft:enderman"), m.hostileIfAttacked());
+        assertTrue(Knowledge.parseMobs("hostile: 不是列表\n").hostile().isEmpty());
+        assertTrue(Knowledge.empty().mobRules().hostile().isEmpty());
+
+        Path repo = Path.of("..", "knowledge");
+        if (Files.exists(repo.resolve("mobs.yaml"))) {
+            dev.blockmate.protocol.MobRules r = new Knowledge(repo).mobRules();
+            assertTrue(r.hostile().contains("minecraft:zombie"));
+            assertTrue(r.hostile().contains("minecraft:blaze"));
+            assertTrue(r.fleeOnly().contains("minecraft:creeper"));
+            assertTrue(r.never().contains("minecraft:villager"));
+            assertTrue(r.never().contains("minecraft:player"));
+            assertTrue(r.never().contains("minecraft:cow"));
+            assertTrue(r.hostileAtNight().contains("minecraft:spider"));
+            assertTrue(r.hostileIfAttacked().contains("minecraft:enderman"));
+            assertTrue(r.hostile().stream().noneMatch(s -> r.never().contains(s)), "一个 id 不能既能打又永远不碰");
+            assertTrue(r.hostile().stream().noneMatch(s -> s.contains("creeper") || s.contains("enderman") || s.contains("spider") && !s.contains("cave")));
+        }
+    }
 }

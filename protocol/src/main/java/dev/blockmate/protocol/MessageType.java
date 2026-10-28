@@ -27,6 +27,10 @@ public enum MessageType {
     @SerializedName("plan") PLAN("plan"),
     /** 任务单 18：网页的"主动说话"开关。 */
     @SerializedName("idle_control") IDLE_CONTROL("idle_control"),
+    /** 任务单 19：网页的战斗开关。 */
+    @SerializedName("combat_control") COMBAT_CONTROL("combat_control"),
+    /** 任务单 19：hub → mc，规则变了整份重发（不用重连）。 */
+    @SerializedName("rules") RULES("rules"),
     // /ws/keeper
     @SerializedName("keeper_cmd") KEEPER_CMD("keeper_cmd"),
     @SerializedName("keeper_status") KEEPER_STATUS("keeper_status");

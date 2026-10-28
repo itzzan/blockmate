@@ -12,7 +12,8 @@ import java.util.Set;
  */
 public final class Rules {
 
-    public static final Rules EMPTY = new Rules(Set.of(), Set.of(), Map.of(), Set.of(), Set.of(), false);
+    public static final Rules EMPTY = new Rules(Set.of(), Set.of(), Map.of(), Set.of(), Set.of(), false,
+            Set.of(), Set.of(), Set.of(), Set.of(), Set.of(), "defend");
 
     private final Set<String> mineable;
     private final Set<String> placeable;
@@ -20,15 +21,64 @@ public final class Rules {
     private final Set<String> avoidFood;
     private final Set<String> needsPickaxe;
     private final boolean received;
+    // 任务单 19：怪物名单和战斗开关
+    private final Set<String> hostile;
+    private final Set<String> fleeOnly;
+    private final Set<String> never;
+    private final Set<String> hostileAtNight;
+    private final Set<String> hostileIfAttacked;
+    private final String combatMode;
 
     private Rules(Set<String> mineable, Set<String> placeable, Map<String, String> drops, Set<String> avoidFood,
-                  Set<String> needsPickaxe, boolean received) {
+                  Set<String> needsPickaxe, boolean received, Set<String> hostile, Set<String> fleeOnly, Set<String> never,
+                  Set<String> hostileAtNight, Set<String> hostileIfAttacked, String combatMode) {
         this.mineable = mineable;
         this.placeable = placeable;
         this.drops = drops;
         this.avoidFood = avoidFood;
         this.needsPickaxe = needsPickaxe;
         this.received = received;
+        this.hostile = hostile;
+        this.fleeOnly = fleeOnly;
+        this.never = never;
+        this.hostileAtNight = hostileAtNight;
+        this.hostileIfAttacked = hostileIfAttacked;
+        this.combatMode = combatMode;
+    }
+
+    /** 任务单 19：加上怪物名单和战斗开关（off / defend / protect，别的当 defend）。 */
+    public Rules withCombat(Collection<String> hostile, Collection<String> fleeOnly, Collection<String> never,
+                            Collection<String> hostileAtNight, Collection<String> hostileIfAttacked, String combatMode) {
+        String mode = combatMode == null ? "" : combatMode.strip().toLowerCase();
+        if (!mode.equals("off") && !mode.equals("protect")) {
+            mode = "defend";
+        }
+        return new Rules(mineable, placeable, drops, avoidFood, needsPickaxe, received, normalizeAll(hostile), normalizeAll(fleeOnly),
+                normalizeAll(never), normalizeAll(hostileAtNight), normalizeAll(hostileIfAttacked), mode);
+    }
+
+    public Set<String> hostile() {
+        return hostile;
+    }
+
+    public Set<String> fleeOnly() {
+        return fleeOnly;
+    }
+
+    public Set<String> never() {
+        return never;
+    }
+
+    public Set<String> hostileAtNight() {
+        return hostileAtNight;
+    }
+
+    public Set<String> hostileIfAttacked() {
+        return hostileIfAttacked;
+    }
+
+    public String combatMode() {
+        return combatMode;
     }
 
     /** 徒手挖了不掉东西的方块（石头、矿、熔炉）：没镐别去挖。 */
@@ -73,7 +123,8 @@ public final class Rules {
                 }
             });
         }
-        return new Rules(normalizeAll(mineable), normalizeAll(placeable), Map.copyOf(d), normalizeAll(avoidFood), normalizeAll(needsPickaxe), true);
+        return new Rules(normalizeAll(mineable), normalizeAll(placeable), Map.copyOf(d), normalizeAll(avoidFood), normalizeAll(needsPickaxe), true,
+                Set.of(), Set.of(), Set.of(), Set.of(), Set.of(), "defend");
     }
 
     /** 这种方块挖掉后背包里多的是什么；没写的和方块同名。 */

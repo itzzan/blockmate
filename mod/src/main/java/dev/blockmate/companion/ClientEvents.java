@@ -30,6 +30,16 @@ public final class ClientEvents {
         MinecraftForge.EVENT_BUS.register(observer);
     }
 
+    /** 白名单 + 怪物名单 + 战斗开关（任务单 19）；老后台没带名单就什么都不打。 */
+    private static Rules buildRules(dev.blockmate.protocol.BlockRules br, dev.blockmate.protocol.MobRules mobs, String combatMode) {
+        Rules rules = Rules.of(br.mineable(), br.placeable(), br.dropsOrEmpty(), br.avoidFoodOrEmpty(), br.needsPickaxeOrEmpty());
+        if (mobs != null) {
+            rules = rules.withCombat(mobs.hostileOrEmpty(), mobs.fleeOnlyOrEmpty(), mobs.neverOrEmpty(), mobs.hostileAtNightOrEmpty(),
+                    mobs.hostileIfAttackedOrEmpty(), combatMode);
+        }
+        return rules;
+    }
+
     private void reportStatus() {
         observer.announceJoined();
     }
@@ -123,10 +133,10 @@ public final class ClientEvents {
                 HelloOk ok = ProtocolCodec.bodyAs(env, HelloOk.class);
                 if (ok.ok()) {
                     if (ok.rules() != null) {
-                        Rules rules = Rules.of(ok.rules().mineable(), ok.rules().placeable(), ok.rules().dropsOrEmpty(), ok.rules().avoidFoodOrEmpty(), ok.rules().needsPickaxeOrEmpty());
+                        Rules rules = buildRules(ok.rules(), ok.mobs(), ok.combatMode());
                         executor.setRules(rules);
-                        CompanionMod.LOG.info(CompanionMod.TAG + "hub hello ok; 收到白名单 可挖={} 可放={}", rules.mineableCount(),
-                                rules.placeableCount());
+                        CompanionMod.LOG.info(CompanionMod.TAG + "hub hello ok; 收到白名单 可挖={} 可放={} 能打={} 战斗={}", rules.mineableCount(),
+                                rules.placeableCount(), rules.hostile().size(), rules.combatMode());
                     } else {
                         executor.setRules(Rules.EMPTY);
                         CompanionMod.LOG.warn(CompanionMod.TAG + "hub hello ok 但没带白名单，什么都不许挖、不许放（后台版本太旧？）");
@@ -134,6 +144,16 @@ public final class ClientEvents {
                     observer.announceJoined();
                 } else {
                     CompanionMod.LOG.error(CompanionMod.TAG + "hub rejected us: {}", ok.error());
+                }
+            }
+            case RULES -> {
+                // 任务单 19：规则变了（战斗开关 / 名单 / 白名单）整份重发，不用重连，也不重发 snapshot / joined
+                dev.blockmate.protocol.RulesUpdate ru = ProtocolCodec.bodyAs(env, dev.blockmate.protocol.RulesUpdate.class);
+                if (ru.rules() != null) {
+                    Rules rules = buildRules(ru.rules(), ru.mobs(), ru.combatMode());
+                    executor.setRules(rules);
+                    CompanionMod.LOG.info(CompanionMod.TAG + "rules updated 可挖={} 能打={} 战斗={}", rules.mineableCount(),
+                            rules.hostile().size(), rules.combatMode());
                 }
             }
             case COMMAND -> executor.onCommand(env);

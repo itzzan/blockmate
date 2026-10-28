@@ -29,6 +29,10 @@ public final class Config {
     public record Idle(boolean enabled, int intervalS) {
     }
 
+    /** 任务单 19：战斗开关 off / defend / protect，默认 defend；网页上的下拉存在设置表里，优先于这里。 */
+    public record Combat(String mode) {
+    }
+
     public record AutoPresence(int pollS, int offlineAfterMin) {
     }
 
@@ -51,6 +55,7 @@ public final class Config {
     public final Rcon rcon;
     public final AutoPresence autoPresence;
     public final Idle idle;
+    public final Combat combat;
 
     private Config(Path baseDir, Map<String, Object> m) {
         this.baseDir = baseDir;
@@ -84,6 +89,7 @@ public final class Config {
         Map<String, Object> i = sub(m, "idle");
         Object en = i.get("enabled");
         this.idle = new Idle(en == null || Boolean.parseBoolean(String.valueOf(en)), intOf(i, "interval_s", 60));
+        this.combat = new Combat(str(sub(m, "combat"), "mode", "defend"));
     }
 
     public static Config load(Path file) throws IOException {
