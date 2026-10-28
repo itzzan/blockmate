@@ -22,5 +22,9 @@ public enum EventKind {
     /** 任务单 19：打完一架。what = 对手种类，reason = 结局（killed / fled / gave_up / stopped / died），count = 用时毫秒，delta = 掉的血。 */
     @SerializedName("combat") COMBAT,
     /** 任务单 21：带路因危险停下了。what = lava / cliff，pos / dim 是自己的位置；主人说"继续"（continue 命令）才接着走。 */
-    @SerializedName("lead_paused") LEAD_PAUSED
+    @SerializedName("lead_paused") LEAD_PAUSED,
+    /** 任务单 23：主人投了末影之眼。pos = 眼出现的位置，count = 水平方向角（MC yaw 度），delta = 俯仰（度），what = flying / near（near = 眼不怎么飞，要塞就在脚下附近）。 */
+    @SerializedName("eye") EYE,
+    /** 任务单 23：打龙打完一场。what = 结局 dragon_dead / tired / left / stopped，count = 用时毫秒，delta = 打掉的水晶数，text = 它死的次数。 */
+    @SerializedName("dragon_fight") DRAGON_FIGHT
 }

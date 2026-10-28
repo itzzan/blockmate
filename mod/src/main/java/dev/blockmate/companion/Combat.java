@@ -14,8 +14,13 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.AreaEffectCloud;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+import net.minecraft.world.entity.boss.EnderDragonPart;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.ShieldItem;
@@ -76,6 +81,27 @@ public final class Combat {
     private LivingEntity target;
     private String targetKind = "";
     private final ArrayDeque<int[]> healthLog = new ArrayDeque<>(); // {tick, damage x100}
+    // 任务单 23：打龙模式（只在末地、龙在、开关没关时）
+    private boolean dragonMode;
+    private int dragonStart;
+    private int dragonDeaths;
+    private int crystalsBroken;
+    private final java.util.Set<Integer> shotCrystals = new java.util.HashSet<>();
+    private int lastDamageDealtTick;
+    private int lastOffenseTick = -1000;
+    private float lastDragonHealth = -1;
+    private boolean retreating;
+    private boolean tiredSaid;
+    private boolean wasDeadInEnd;
+    private Vec3 arrivalPos;
+    private String arrivalDim;
+    private int lastPillarScanTick = -1000;
+    private double[] pillar;
+    private Entity shootTarget;
+    private static final int DRAGON_LOST_TICKS = 200;
+    private static final int PILLAR_SCAN_EVERY = 40;
+    private static final int PILLAR_SCAN_RADIUS = 48;
+
     // 任务单 20："打那只"
     private String huntKind;
     private int huntStart;
@@ -131,6 +157,10 @@ public final class Combat {
 
     /** "停"命令或开关关掉：收手，不发 danger，发一条 combat(stopped)。 */
     public void stop(Minecraft mc, LocalPlayer me, int tick, String why) {
+        if (dragonMode) {
+            CompanionMod.LOG.info(CompanionMod.TAG + "dragon stop: {}", why);
+            endDragon(mc, me, tick, "stopped");
+        }
         if (active) {
             CompanionMod.LOG.info(CompanionMod.TAG + "combat stop: {}", why);
             end(mc, me, tick, "stopped");
@@ -143,6 +173,16 @@ public final class Combat {
             return false;
         }
         if (me.isDeadOrDying()) {
+            if (dragonMode) {
+                if (!wasDeadInEnd) {
+                    dragonDeaths++;
+                    wasDeadInEnd = true;
+                    stopUsing(mc, me);
+                    CompanionMod.LOG.info(CompanionMod.TAG + "dragon: died ({} so far), fight continues when back", dragonDeaths);
+                }
+                lastHealth = -1;
+                return false;
+            }
             if (active) {
                 end(mc, me, tick, "died");
             }
@@ -152,8 +192,12 @@ public final class Combat {
             lastHealth = -1;
             return false;
         }
+        wasDeadInEnd = false;
         trackHealth(me, tick);
         if ("off".equals(rules.combatMode())) {
+            if (dragonMode) {
+                endDragon(mc, me, tick, "stopped");
+            }
             if (active) {
                 end(mc, me, tick, "stopped");
             }
@@ -161,6 +205,20 @@ public final class Combat {
                 finishHunt(HuntState.GAVE_UP);
             }
             return false;
+        }
+        // ---- 任务单 23：末地里龙在就进打龙模式，别的规则都让路 ----
+        String dimNow = Observer.dim(mc);
+        if (Landmarks_DIM_END.equals(dimNow)) {
+            if (arrivalPos == null || !Landmarks_DIM_END.equals(arrivalDim)) {
+                arrivalPos = me.position();
+                arrivalDim = dimNow;
+            }
+            EnderDragon dragon = nearestDragon(mc, me);
+            if (dragon != null || dragonMode) {
+                return tickDragon(mc, me, rules, tick, dragon);
+            }
+        } else if (dragonMode) {
+            endDragon(mc, me, tick, "left");
         }
         // ---- 感知 ----
         boolean night = Survival.isNight(mc.level.getDayTime() % 24000);
@@ -711,6 +769,304 @@ public final class Combat {
         targetKind = "";
         gaveUp = false;
         protecting = false;
+    }
+
+    // ---------------- 任务单 23：打龙 ----------------
+
+    private static final String Landmarks_DIM_END = "minecraft:the_end";
+
+    private static EnderDragon nearestDragon(Minecraft mc, LocalPlayer me) {
+        EnderDragon best = null;
+        double bd = Double.MAX_VALUE;
+        for (EnderDragon d : mc.level.getEntitiesOfClass(EnderDragon.class, me.getBoundingBox().inflate(160))) {
+            if (!d.isAlive()) {
+                continue;
+            }
+            double dist = me.distanceTo(d);
+            if (dist < bd) {
+                bd = dist;
+                best = d;
+            }
+        }
+        return best;
+    }
+
+    /** 龙身上离我们最近的一块（龙本体打不着，要打部件）。 */
+    private static Entity nearestPart(EnderDragon dragon, LocalPlayer me) {
+        Entity best = dragon;
+        double bd = me.distanceTo(dragon);
+        for (EnderDragonPart part : dragon.getSubEntities()) {
+            double d = me.distanceTo(part);
+            if (d < bd) {
+                bd = d;
+                best = part;
+            }
+        }
+        return best;
+    }
+
+    /** 打龙模式每 tick：按主人定的细则，前面的优先。返回 true = 执行器暂停。 */
+    private boolean tickDragon(Minecraft mc, LocalPlayer me, Rules rules, int tick, EnderDragon dragon) {
+        if (!dragonMode) {
+            dragonMode = true;
+            active = true;
+            dragonStart = tick;
+            dragonDeaths = 0;
+            crystalsBroken = 0;
+            shotCrystals.clear();
+            lastDamageDealtTick = tick;
+            lastDragonHealth = dragon == null ? -1 : dragon.getHealth();
+            retreating = false;
+            tiredSaid = false;
+            targetKind = "minecraft:ender_dragon";
+            BaritoneBridge.cancelEverything();
+            CompanionMod.LOG.info(CompanionMod.TAG + "dragon fight start health={} arrival={}", dragon == null ? 0 : dragon.getHealth(), arrivalPos);
+        }
+        if (dragon == null) {
+            if (tick - lastThreatTick > DRAGON_LOST_TICKS) {
+                endDragon(mc, me, tick, "dragon_dead");
+                return false;
+            }
+            guardSpot(mc, me, tick, arrivalPos);
+            return true;
+        }
+        lastThreatTick = tick;
+        if (dragon.getHealth() <= 0 || dragon.isDeadOrDying()) {
+            endDragon(mc, me, tick, "dragon_dead");
+            return false;
+        }
+        // 造成伤害了没：我们挥过 / 射过之后 2 秒内龙掉血；射过的水晶没了
+        if (lastDragonHealth >= 0 && dragon.getHealth() < lastDragonHealth && tick - lastOffenseTick <= 40) {
+            lastDamageDealtTick = tick;
+        }
+        lastDragonHealth = dragon.getHealth();
+        if (!shotCrystals.isEmpty()) {
+            java.util.Iterator<Integer> it = shotCrystals.iterator();
+            while (it.hasNext()) {
+                int id = it.next();
+                Entity e = mc.level.getEntity(id);
+                if (e == null || !e.isAlive()) {
+                    crystalsBroken++;
+                    lastDamageDealtTick = tick;
+                    it.remove();
+                    CompanionMod.LOG.info(CompanionMod.TAG + "dragon: crystal down ({} so far)", crystalsBroken);
+                }
+            }
+        }
+        // 感知
+        AreaEffectCloud breath = null;
+        double breathDist = Double.NaN;
+        for (AreaEffectCloud c : mc.level.getEntitiesOfClass(AreaEffectCloud.class, me.getBoundingBox().inflate(DragonLogic.BREATH_RADIUS + 1))) {
+            double d = me.distanceTo(c);
+            if (d <= DragonLogic.BREATH_RADIUS + c.getRadius() && (breath == null || d < breathDist)) {
+                breath = c;
+                breathDist = d;
+            }
+        }
+        EndCrystal crystal = null;
+        double cd = Double.NaN;
+        for (EndCrystal c : mc.level.getEntitiesOfClass(EndCrystal.class, me.getBoundingBox().inflate(DragonLogic.CRYSTAL_MAX))) {
+            double d = me.distanceTo(c);
+            if (d < DragonLogic.CRYSTAL_MIN || d > DragonLogic.CRYSTAL_MAX || !me.hasLineOfSight(c)) {
+                continue;
+            }
+            BlockPos bp = c.blockPosition();
+            if (DragonLogic.caged((x, y, z) -> mc.level.getBlockState(new BlockPos(x, y, z)).is(Blocks.IRON_BARS), bp.getX(), bp.getY(), bp.getZ())) {
+                continue;
+            }
+            if (crystal == null || d < cd) {
+                crystal = c;
+                cd = d;
+            }
+        }
+        Player owner = findOwner(mc, me);
+        boolean bowAndArrow = hasBow(me) && hasArrow(me);
+        double dragonDist = me.distanceTo(nearestPart(dragon, me));
+        DragonLogic.Situation s = new DragonLogic.Situation(breath != null, me.getHealth(), retreating, dragonDist, bowAndArrow,
+                crystal != null, owner != null, tick - lastDamageDealtTick, tick - dragonStart, tiredSaid);
+        DragonLogic.Action action = DragonLogic.decide(s);
+        if (eating) {
+            tickEat(mc, me, tick);
+            if (phase == Phase.RUN) {
+                phase = Phase.FIGHT; // 打龙时吃完不往主人跑，回到决策
+            }
+            return true;
+        }
+        if (action != DragonLogic.Action.SHOOT_CRYSTAL && phase == Phase.SHOOT) {
+            stopCharging(mc, me);
+        }
+        switch (action) {
+            case DODGE_BREATH -> {
+                if (tick - lastGoalTick >= GOAL_REFRESH_TICKS) {
+                    setGoalAway(me, breath.position(), 4, tick);
+                    CompanionMod.LOG.info(CompanionMod.TAG + "dragon: breath {} away, dodging", Math.round(breathDist));
+                }
+            }
+            case RETREAT -> retreatBehindPillar(mc, me, rules, dragon, tick);
+            case MELEE -> {
+                retreating = false;
+                Entity part = nearestPart(dragon, me);
+                if (!weaponChecked || CombatLogic.isBow(Executor.idOf(me.getMainHandItem()))) {
+                    selectWeapon(mc, me);
+                    weaponChecked = true;
+                }
+                me.lookAt(EntityAnchorArgument.Anchor.EYES, part.position().add(0, part.getBbHeight() * 0.5, 0));
+                if (me.distanceTo(part) <= CombatLogic.REACH && me.getAttackStrengthScale(0.5f) >= CombatLogic.SWING_STRENGTH) {
+                    mc.gameMode.attack(me, part);
+                    me.swing(InteractionHand.MAIN_HAND);
+                    me.resetAttackStrengthTicker();
+                    lastOffenseTick = tick;
+                    CompanionMod.LOG.info(CompanionMod.TAG + "combat target=minecraft:ender_dragon allowed=true");
+                }
+            }
+            case SHOOT_CRYSTAL -> {
+                retreating = false;
+                shootAt(mc, me, tick, crystal);
+                if (phase != Phase.SHOOT) {
+                    shotCrystals.add(crystal.getId());
+                }
+            }
+            case GUARD_OWNER -> {
+                retreating = false;
+                if (owner != null && me.distanceTo(owner) > DragonLogic.GUARD_OWNER_DISTANCE - 2) {
+                    guardSpot(mc, me, tick, owner.position());
+                }
+            }
+            case GUARD_PORTAL -> {
+                retreating = false;
+                guardSpot(mc, me, tick, arrivalPos);
+            }
+            case TIRED -> {
+                tiredSaid = true;
+                send.accept(MessageType.EVENT, Event.dragonFight("tired", (tick - dragonStart) * 50, crystalsBroken, dragonDeaths,
+                        Observer.pos(me), Observer.dim(mc)));
+                CompanionMod.LOG.info(CompanionMod.TAG + "dragon: 15 min, tired -> guard only");
+            }
+        }
+        return true;
+    }
+
+    private void guardSpot(Minecraft mc, LocalPlayer me, int tick, Vec3 spot) {
+        if (spot == null || tick - lastGoalTick < GOAL_REFRESH_TICKS * 2) {
+            return;
+        }
+        if (me.position().distanceTo(spot) <= 3) {
+            return;
+        }
+        IBaritone b = BaritoneBridge.baritone();
+        if (b != null) {
+            b.getCustomGoalProcess().setGoalAndPath(new GoalNear(BlockPos.containing(spot), 2));
+            lastGoalTick = tick;
+        }
+    }
+
+    /** 血少：找最近的黑曜石柱，站到它远离龙的那一面，吃一口，血回到 14 再上。 */
+    private void retreatBehindPillar(Minecraft mc, LocalPlayer me, Rules rules, EnderDragon dragon, int tick) {
+        retreating = true;
+        if (pillar == null || tick - lastPillarScanTick >= PILLAR_SCAN_EVERY) {
+            lastPillarScanTick = tick;
+            pillar = nearestObsidianColumn(mc, me);
+        }
+        double[] spot = pillar == null ? new double[]{me.getX() - (dragon.getX() - me.getX()), me.getZ() - (dragon.getZ() - me.getZ())}
+                : DragonLogic.behindPillar(pillar[0], pillar[1], dragon.getX(), dragon.getZ());
+        double dist = Math.hypot(me.getX() - spot[0], me.getZ() - spot[1]);
+        if (dist > 2.5) {
+            if (tick - lastGoalTick >= GOAL_REFRESH_TICKS) {
+                IBaritone b = BaritoneBridge.baritone();
+                if (b != null) {
+                    b.getCustomGoalProcess().setGoalAndPath(new GoalXZ((int) Math.round(spot[0]), (int) Math.round(spot[1])));
+                    lastGoalTick = tick;
+                }
+            }
+            return;
+        }
+        BaritoneBridge.cancelEverything();
+        if (me.getHealth() < DragonLogic.RESUME_HEALTH && !Executor.foods(me).isEmpty() && !eating) {
+            beginEat(mc, me, rules, tick);
+            ateThisFight = false; // 打龙时想吃几口吃几口
+        }
+    }
+
+    /** 48 格内最近的黑曜石柱（取样找黑曜石方块，脚平面和上面 6 格各扫一层）。 */
+    private static double[] nearestObsidianColumn(Minecraft mc, LocalPlayer me) {
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        int cx = me.getBlockX();
+        int cz = me.getBlockZ();
+        double[] best = null;
+        double bd = Double.MAX_VALUE;
+        for (int y : new int[]{me.getBlockY(), me.getBlockY() + 6}) {
+            for (int dx = -PILLAR_SCAN_RADIUS; dx <= PILLAR_SCAN_RADIUS; dx += 2) {
+                for (int dz = -PILLAR_SCAN_RADIUS; dz <= PILLAR_SCAN_RADIUS; dz += 2) {
+                    if (mc.level.getBlockState(p.set(cx + dx, y, cz + dz)).is(Blocks.OBSIDIAN)) {
+                        double d = dx * dx + dz * dz;
+                        if (d < bd && d > 4) {
+                            bd = d;
+                            best = new double[]{cx + dx + 0.5, cz + dz + 0.5};
+                        }
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /** 用弓射一个东西（水晶也行）：换弓、按住使用键蓄力 ≥ 20 tick、瞄中心松开。 */
+    private void shootAt(Minecraft mc, LocalPlayer me, int tick, Entity what) {
+        if (what == null) {
+            return;
+        }
+        shootTarget = what;
+        Vec3 aim = what.position().add(0, what.getBbHeight() * 0.5, 0);
+        me.lookAt(EntityAnchorArgument.Anchor.EYES, aim);
+        if (phase != Phase.SHOOT) {
+            if (tick < shotCooldownUntil || !selectBow(mc, me)) {
+                return;
+            }
+            BaritoneBridge.cancelEverything();
+            phase = Phase.SHOOT;
+            chargeStart = tick;
+            mc.options.keyUse.setDown(true);
+            useKeyHeld = true;
+            mc.gameMode.useItem(me, InteractionHand.MAIN_HAND);
+            return;
+        }
+        if (tick - chargeStart >= CombatLogic.BOW_CHARGE_TICKS && me.isUsingItem()) {
+            mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
+            mc.gameMode.releaseUsingItem(me);
+            shotCooldownUntil = tick + SHOT_COOLDOWN_TICKS;
+            lastOffenseTick = tick;
+            phase = Phase.FIGHT;
+            CompanionMod.LOG.info(CompanionMod.TAG + "dragon: shot at {} ({} ticks)", Combat.typeId(what), tick - chargeStart);
+        } else if (tick - chargeStart > CombatLogic.BOW_CHARGE_TICKS * 3) {
+            stopCharging(mc, me);
+        }
+    }
+
+    private void stopUsing(Minecraft mc, LocalPlayer me) {
+        lowerShield(mc, me);
+        stopCharging(mc, me);
+        if (eating) {
+            mc.options.keyUse.setDown(false);
+            useKeyHeld = false;
+            eating = false;
+        }
+    }
+
+    private void endDragon(Minecraft mc, LocalPlayer me, int tick, String outcome) {
+        stopUsing(mc, me);
+        BaritoneBridge.cancelEverything();
+        int ms = (tick - dragonStart) * 50;
+        CompanionMod.LOG.info(CompanionMod.TAG + "dragon fight end outcome={} ms={} crystals={} deaths={}", outcome, ms, crystalsBroken, dragonDeaths);
+        send.accept(MessageType.EVENT, Event.dragonFight(outcome, ms, crystalsBroken, dragonDeaths, Observer.pos(me), Observer.dim(mc)));
+        dragonMode = false;
+        active = false;
+        retreating = false;
+        tiredSaid = false;
+        pillar = null;
+        phase = Phase.FIGHT;
+        target = null;
+        targetKind = "";
     }
 
     // ---------------- 小工具 ----------------

@@ -2285,7 +2285,8 @@ public final class Executor implements AbstractGameEventListener {
             for (int dx = -8; dx <= 8; dx++) {
                 for (int dy = -4; dy <= 4; dy++) {
                     for (int dz = -8; dz <= 8; dz++) {
-                        if (mc.level.getBlockState(p.set(feet.getX() + dx, feet.getY() + dy, feet.getZ() + dz)).is(Blocks.NETHER_PORTAL)) {
+                        var pst = mc.level.getBlockState(p.set(feet.getX() + dx, feet.getY() + dy, feet.getZ() + dz));
+                        if (pst.is(Blocks.NETHER_PORTAL) || pst.is(Blocks.END_PORTAL)) {
                             double d = dx * dx + dy * dy + dz * dz;
                             if (d < best) {
                                 best = d;
@@ -2329,11 +2330,13 @@ public final class Executor implements AbstractGameEventListener {
             return;
         }
         BlockPos inside = posOf(t.portalInside);
-        if (mc.level.getBlockState(me.blockPosition()).is(Blocks.NETHER_PORTAL)) {
-            BaritoneBridge.cancelEverything(); // 站在门里别动，4 秒后传送
+        var here = mc.level.getBlockState(me.blockPosition());
+        if (here.is(Blocks.NETHER_PORTAL) || here.is(Blocks.END_PORTAL)) {
+            BaritoneBridge.cancelEverything(); // 站在门里别动（下界门 4 秒传送，末地门一碰就走）
             return;
         }
-        if (!mc.level.getBlockState(inside).is(Blocks.NETHER_PORTAL)) {
+        var portalBlock = mc.level.getBlockState(inside);
+        if (!portalBlock.is(Blocks.NETHER_PORTAL) && !portalBlock.is(Blocks.END_PORTAL)) {
             CompanionMod.LOG.info(CompanionMod.TAG + "enter_portal: portal at {} is gone -> item_not_found", inside);
             finish(Result.failed(t.id, Reason.ITEM_NOT_FOUND));
             return;
@@ -2365,7 +2368,8 @@ public final class Executor implements AbstractGameEventListener {
         Task t = current;
         IBaritone b = BaritoneBridge.baritone();
         LandmarkLogic.Found f = LandmarkScanner.lastFound;
-        if (f != null && LandmarkScanner.lastFoundAtMs > t.exploreStartMs && ("fortress".equals(f.kind()) || "stronghold".equals(f.kind()))) {
+        if (f != null && LandmarkScanner.lastFoundAtMs > t.exploreStartMs
+                && ("fortress".equals(f.kind()) || "stronghold".equals(f.kind()) || "end_portal".equals(f.kind()))) {
             BaritoneBridge.cancelEverything();
             CompanionMod.LOG.info(CompanionMod.TAG + "explore: found {} at ({}, {}, {})", f.kind(), Math.round(f.x()), Math.round(f.y()), Math.round(f.z()));
             finish(Result.ok(t.id, new Result.ExploreDetail(f.kind(), new Pos(f.x(), f.y(), f.z()))));

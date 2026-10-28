@@ -107,4 +107,13 @@ class ShortcutsTest {
         assertTrue(!Shortcuts.isAskYes("不要"));
         assertTrue(Shortcuts.isReject("不要"));
     }
+
+    @Test
+    void 任务单23_进末地_找末地传送门() {
+        assertTrue(Shortcuts.isGoEnd("我们进末地"));
+        assertTrue(Shortcuts.isGoEnd("去末地吧！"));
+        assertTrue(!Shortcuts.isGoEnd("末地有什么"));
+        assertEquals(CommandName.EXPLORE, Shortcuts.match("找末地传送门").orElseThrow());
+        assertEquals(CommandName.EXPLORE, Shortcuts.match("找传送门房").orElseThrow());
+    }
 }

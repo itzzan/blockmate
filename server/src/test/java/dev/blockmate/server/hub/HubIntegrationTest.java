@@ -587,6 +587,42 @@ class HubIntegrationTest {
         assertTrue(lack != null && lack.contains("打火石"), "要说清缺什么：" + lack);
     }
 
+    /** 任务单 23：两次投眼算要塞并记地标；"进末地"先说清能做不能做再问，说"不"作废。 */
+    @Test
+    void 任务单23_两次投眼算要塞_进末地先说清再问() throws Exception {
+        startApp();
+        UiClient ui = UiClient.connect(app.port(), "t", "t");
+        ui.next(MessageType.HELLO, 3000);
+        WsClient mock = startMock(false);
+        waitFor(() -> app.hub().companionInWorld(), 5000, "online");
+        // 要塞在 (0, 500)：在 (-200, 0) 和 (200, 0) 各投一次
+        double yawA = Math.toDegrees(Math.atan2(-(0 - (-200)), 500.0));
+        double yawB = Math.toDegrees(Math.atan2(-(0 - 200), 500.0));
+        mock.send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.eye(yawA, 10, new dev.blockmate.protocol.Pos(-200, 64, 0), "minecraft:overworld", false)));
+        String first = replyContaining(ui, "再投一次", 5000);
+        assertTrue(first != null && first.contains("100 格"), "第一次只记方向：" + first);
+        mock.send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.eye(yawB, 10, new dev.blockmate.protocol.Pos(200, 64, 0), "minecraft:overworld", false)));
+        String second = replyContaining(ui, "要塞大概在", 5000);
+        assertTrue(second != null && second.contains("要塞大概在 (0, "), "两次算出交点：" + second);
+        waitFor(() -> app.memory().worldFacts().stream().anyMatch(f -> "stronghold".equals(f.kind())), 3000, "要塞记进地标");
+        dev.blockmate.server.memory.StoredWorldFact sh = app.memory().worldFacts().stream().filter(f -> "stronghold".equals(f.kind())).findFirst().orElseThrow();
+        assertTrue(Math.abs(sh.x()) < 20 && Math.abs(sh.z() - 500) < 20, "方向角取整后误差在 20 格内：" + sh.x() + "," + sh.z());
+        // 眼不飞：要塞就在脚下
+        mock.send(ProtocolCodec.envelope(MessageType.EVENT, dev.blockmate.protocol.Peer.MC, dev.blockmate.protocol.Peer.HUB,
+                dev.blockmate.protocol.Event.eye(0, -60, new dev.blockmate.protocol.Pos(900, 64, 900), "minecraft:overworld", true)));
+        assertTrue(replyContaining(ui, "脚下", 5000) != null);
+        // 进末地：假执行器没弓，先说"我没弓"再问；说"不"作废
+        ui.send(MessageType.CHAT, new Chat("我们进末地"));
+        String brief = replyContaining(ui, "进吗", 8000);
+        assertTrue(brief != null && brief.contains("没弓") && brief.contains("守着传送门"), "进门前说清：" + brief);
+        ui.send(MessageType.CHAT, new Chat("不要"));
+        assertEquals("好，那先不做了。", replyContaining(ui, "不做了", 5000));
+        waitFor(() -> app.memory().recentPlans(1).size() == 1 && "aborted".equals(app.memory().recentPlans(1).get(0).outcome()), 5000, "计划作废");
+        assertTrue(mockConsole.stream().noneMatch(l -> l.contains("收到 enter_portal")), "说了不就不进门");
+    }
+
     /** 一直收回复，直到某条包含 text；超时返回 null。 */
     private static String replyContaining(UiClient ui, String text, long timeoutMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;

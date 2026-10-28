@@ -34,6 +34,7 @@ import dev.blockmate.protocol.Status;
 import dev.blockmate.protocol.TaskInfo;
 import dev.blockmate.server.Config;
 import dev.blockmate.server.brain.Blueprint;
+import dev.blockmate.server.brain.EyeLocator;
 import dev.blockmate.server.brain.Landmarks;
 import dev.blockmate.server.brain.MobNames;
 import dev.blockmate.server.brain.Progression;
@@ -143,6 +144,12 @@ public final class Hub {
     /** 当前计划是谁发起的：owner（主人要的）/ idle（它提议、主人点头的），plans 表的 source 列。 */
     private String planSource = "owner";
     private String pendingPlanSource = "owner";
+
+    // ---------- 任务单 23：末地 ----------
+    /** 主人投过的末影之眼（主世界），两次隔 100 格以上就能算要塞。 */
+    private final List<EyeLocator.Throw> eyeThrows = new ArrayList<>();
+    /** 上次死在末地：重生后按记过的末地传送门走回去。 */
+    private boolean diedInEnd;
 
     // ---------- 任务单 22：计划里的"问主人"步 ----------
     /** 正在等主人回答的那一步（ask_owner）；主人说"点 / 好"继续，"不"整个作废，2 分钟不答也作废。 */
@@ -416,6 +423,45 @@ public final class Hub {
         return (fresh ? "记下了：这里是" : "这儿我记过了，是") + Landmarks.kindName(kind) + "。";
     }
 
+    /** 任务单 23：主人投了眼——near 就是要塞在脚下附近；否则两次隔 100 格以上求交点，说一句并记要塞。 */
+    private void onEye(Event ev) {
+        if (ev.pos() == null) {
+            return;
+        }
+        String dim = ev.dim() == null ? "minecraft:overworld" : ev.dim();
+        if ("near".equals(ev.what())) {
+            boolean fresh = recordFact(Landmarks.STRONGHOLD, null, ev.pos(), dim, "task_result");
+            log.info("eye near pos=({}, {}) fresh={}", Math.round(ev.pos().x()), Math.round(ev.pos().z()), fresh);
+            sayPlain("眼没飞远就掉下来了，要塞就在这脚下附近，往下挖就是。");
+            eyeThrows.clear();
+            return;
+        }
+        double yaw = ev.count() == null ? 0 : ev.count();
+        eyeThrows.add(new EyeLocator.Throw(ev.pos().x(), ev.pos().z(), yaw, false));
+        if (eyeThrows.size() > 6) {
+            eyeThrows.remove(0);
+        }
+        Optional<double[]> p = EyeLocator.estimate(eyeThrows);
+        if (p.isEmpty()) {
+            if (eyeThrows.size() == 1) {
+                sayPlain("记下方向了，往那边走 100 格以上再投一次，我就能算出要塞在哪。");
+            } else if (!EyeLocator.lastTwoFarEnough(eyeThrows)) {
+                sayPlain("两次投得太近，再走远一点（100 格以上）投一次。");
+            } else {
+                sayPlain("两次方向差不多，算不出交点，换个方向走远点再投一次。");
+            }
+            log.info("eye throws={} estimate=none", eyeThrows.size());
+            return;
+        }
+        EyeLocator.Estimate est = EyeLocator.describeFrom(p.get(), ev.pos().x(), ev.pos().z());
+        Pos target = new Pos(p.get()[0], 40, p.get()[1]);
+        recordFact(Landmarks.STRONGHOLD, null, target, dim, "task_result");
+        log.info("eye estimate x={} z={} dist={}", Math.round(est.x()), Math.round(est.z()), Math.round(est.distance()));
+        sayPlain("要塞大概在 (" + Math.round(est.x()) + ", " + Math.round(est.z()) + ")，离这儿 " + Math.round(est.distance()) + " 格，往"
+                + est.direction() + "。说\"带我去要塞\"我带你过去。");
+        eyeThrows.clear();
+    }
+
     /** 任务单 22：门搭好了就把门里那格记成传送门（按当前维度分主世界 / 下界）。 */
     private void rememberPortal(Result r) {
         if (r.status() != dev.blockmate.protocol.ResultStatus.OK || commandNames.get(r.commandId()) != CommandName.BUILD_PORTAL) {
@@ -498,7 +544,25 @@ public final class Hub {
             }
             case DEATH -> {
                 memory.saveEvent("death", null, null, ProtocolCodec.toBody(ev));
-                notice("伙伴死了", "warn");
+                diedInEnd = Landmarks.DIM_END.equals(ev.dim()) || (lastSnapshot != null && Landmarks.DIM_END.equals(lastSnapshot.dim()));
+                notice(diedInEnd ? "伙伴在末地死了" : "伙伴死了", "warn");
+            }
+            case EYE -> {
+                memory.saveEvent("eye", null, null, ProtocolCodec.toBody(ev));
+                onEye(ev);
+            }
+            case DRAGON_FIGHT -> {
+                memory.saveEvent("dragon_fight", null, null, ProtocolCodec.toBody(ev));
+                int ms = ev.count() == null ? 0 : ev.count();
+                int crystals = ev.delta() == null ? 0 : ev.delta();
+                String deaths = ev.text() == null ? "0" : ev.text();
+                log.info("event dragon_fight outcome={} ms={} crystals={} deaths={}", ev.what(), ms, crystals, deaths);
+                String stats = "用了 " + Math.round(ms / 60000.0) + " 分钟，打掉 " + crystals + " 个水晶，我死了 " + deaths + " 次。";
+                switch (ev.what() == null ? "" : ev.what()) {
+                    case "dragon_dead" -> sayPlain("龙死了！" + stats);
+                    case "tired" -> sayPlain("我打不动了，你来主攻，我守着你。" + stats);
+                    default -> notice("打龙结束：" + ev.what() + "，" + stats, "info");
+                }
             }
             case RESPAWN -> {
                 memory.saveEvent("respawn", null, null, ProtocolCodec.toBody(ev));
@@ -552,6 +616,27 @@ public final class Hub {
 
     /** 任务单 15：重生后——主人在就过去找主人，不在但记过家就回家，都没有就待着。等 2 秒让模组进完世界。 */
     private void afterRespawn() {
+        if (diedInEnd) {
+            // 任务单 23：末地死了，按记过的末地传送门走回去；没记过就说一句
+            diedInEnd = false;
+            boolean known = memory.worldFacts().stream().anyMatch(f -> Landmarks.END_PORTAL.equals(f.kind()));
+            log.info("respawn_decision died_in_end=true end_portal_known={}", known);
+            if (!known) {
+                sayPlain("我死了一回，现在在出生点，没记过末地传送门在哪，过不去了。");
+                return;
+            }
+            sayPlain("我死了一回，从出生点走回末地传送门去。");
+            JsonObject gotoArgs = new JsonObject();
+            gotoArgs.addProperty("place", "末地传送门");
+            exec.schedule(() -> submit(() -> {
+                if (!companionInWorld() || (plan != null && plan.running())) {
+                    return;
+                }
+                startPlan("重生后回末地", List.of(new PlanRun.Step(0, CommandName.GOTO, gotoArgs),
+                        new PlanRun.Step(1, CommandName.ENTER_PORTAL, new JsonObject())), null);
+            }), 2, java.util.concurrent.TimeUnit.SECONDS);
+            return;
+        }
         boolean ownerHere = (ownerOnline != null && ownerOnline) || (lastSnapshot != null && lastSnapshot.owner() != null);
         boolean homeKnown = memory.place("home").isPresent();
         CommandName action = ownerHere ? CommandName.COME_HERE : homeKnown ? CommandName.GO_HOME : null;
@@ -1128,6 +1213,26 @@ public final class Hub {
                 abortQuietly(PlanRun.Outcome.ABORTED);
                 return;
             }
+        }
+        // 任务单 23："进末地"：先把能做不能做的说清（问主人步），你说进再进
+        if (Shortcuts.isGoEnd(text)) {
+            log.info("chat_in len={} msg_id={} shortcut=go_end", text.length(), msg.id());
+            if (!companionInWorld()) {
+                directReply(env.id(), msg, NOTICE_OFFLINE + "。");
+                return;
+            }
+            Map<String, Integer> inv = lastSnapshot != null && lastSnapshot.inventory() != null ? lastSnapshot.inventory() : Map.of();
+            boolean bow = inv.getOrDefault("minecraft:bow", 0) > 0;
+            int arrows = inv.entrySet().stream().filter(e -> e.getKey().endsWith("arrow")).mapToInt(Map.Entry::getValue).sum();
+            String brief = "进末地前先说清：" + (bow && arrows > 0 ? "我有弓和 " + arrows + " 根箭，能打柱子上的水晶，笼子里的得你打；"
+                    : (bow ? "我有弓没箭" : "我没弓") + "，水晶得你打，我只守着你；")
+                    + "龙飞着我打不到，俯冲下来我砍；血少我躲柱子后面吃东西；你死了我守着传送门等你；我死了会从出生点走回来。进吗？";
+            JsonObject ask = new JsonObject();
+            ask.addProperty("say", brief);
+            directReply(env.id(), msg, "好。");
+            startPlan("进末地", List.of(new PlanRun.Step(0, CommandName.ASK_OWNER, ask),
+                    new PlanRun.Step(1, CommandName.ENTER_PORTAL, new JsonObject())), msg.id());
+            return;
         }
         // 任务单 22："我们去下界"固定四步：搭门 → 问主人 → 点火 → 进门；材料不够先说缺什么
         if (Shortcuts.isGoNether(text)) {

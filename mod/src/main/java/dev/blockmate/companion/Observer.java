@@ -47,6 +47,8 @@ public final class Observer {
     private String lastKickReason;
     /** 任务单 17：地标扫描，每 tick 扫一小片。 */
     private final LandmarkScanner landmarks = new LandmarkScanner();
+    /** 任务单 23：主人投的末影之眼——记它出现时的位置，10 tick 后看飞向哪。 */
+    private final Map<Integer, double[]> eyes = new java.util.HashMap<>(); // id -> {x, y, z, startTick}
 
     public Observer(Supplier<HubLink> link, Supplier<TaskInfo> taskSupplier, Consumer<String> onDisconnectScreen) {
         this.link = link;
@@ -76,6 +78,7 @@ public final class Observer {
         for (Event ev : landmarks.tick(mc, player)) {
             send(MessageType.EVENT, ev);
         }
+        watchEyes(mc, player);
 
         if (++ticks % SNAPSHOT_EVERY_TICKS != 0) {
             return;
@@ -87,6 +90,32 @@ public final class Observer {
         }
         lastInventory = inv;
         send(MessageType.SNAPSHOT, snapshot(mc, player, inv));
+    }
+
+    /** 任务单 23：32 格内的末影之眼，出现后 10 tick 算方向发 event eye；一只眼只报一次。 */
+    private void watchEyes(Minecraft mc, LocalPlayer me) {
+        var seen = mc.level.getEntitiesOfClass(net.minecraft.world.entity.projectile.EyeOfEnder.class, me.getBoundingBox().inflate(32));
+        for (var eye : seen) {
+            double[] rec = eyes.get(eye.getId());
+            if (rec == null) {
+                eyes.put(eye.getId(), new double[]{eye.getX(), eye.getY(), eye.getZ(), ticks});
+                continue;
+            }
+            if (rec[3] >= 0 && ticks - rec[3] >= 10) {
+                double dx = eye.getX() - rec[0];
+                double dy = eye.getY() - rec[1];
+                double dz = eye.getZ() - rec[2];
+                boolean near = DragonLogic.eyeNear(dx, dz);
+                double yaw = near ? 0 : DragonLogic.yawOf(dx, dz);
+                double pitch = Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
+                send(MessageType.EVENT, Event.eye(yaw, pitch, new Pos(rec[0], rec[1], rec[2]), dim(mc), near));
+                CompanionMod.LOG.info(CompanionMod.TAG + "event eye yaw={} pitch={} near={}", Math.round(yaw), Math.round(pitch), near);
+                rec[3] = -1; // 报过了
+            }
+        }
+        if (eyes.size() > 32) {
+            eyes.clear();
+        }
     }
 
     // ---------- 事件 ----------

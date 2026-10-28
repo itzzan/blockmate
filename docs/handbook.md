@@ -177,6 +177,8 @@ hub 把 snapshot 摘要成一段中文给模型看（第 9 节），不把 JSON 
 | landmark | what, pos, dim | 任务单 17：看见了地标。what ∈ village / portal_overworld / portal_nether / fortress / stronghold / end_portal，pos 是地标的位置（不是自己的）。模组每 tick 扫一列（x 固定，z ±24、y ±8），49 tick 一遍、歇 50 tick，约每 5 秒一遍；村庄 = 钟或 24 格内 ≥ 2 个村民，传送门按维度分，下界砖 ≥ 20 块且在下界 = 下界要塞，苔石砖 + 石砖楼梯同时有且在主世界 = 要塞，末地传送门框 = 末地传送门；同种 100 格内只报一次（模组侧，重连清零） |
 | danger | what, pos, dim | 任务单 17：看见了危险，第一版只有 what=lava（8 格内岩浆 ≥ 20 块），32 格内只报一次；任务单 19 加 what=overwhelmed（打不过了，正往主人 / 出生点跑），hub 只提示不记事实 |
 | lead_paused | what, pos, dim | 任务单 21：带路因前方危险停下了，what = lava / cliff。hub 存事件、让伙伴说一句"前面有岩浆，我停这儿了，你说"继续"我再走。"（不经过模型），记下这条命令 id，主人说"继续"才下 continue |
+| eye | pos, dim, count, delta, what | 任务单 23：主人投了末影之眼。模组看 32 格内的眼实体，出现后 10 tick 算：count = 水平方向角（MC yaw 度，0 南 90 西），delta = 俯仰度，what = flying / near（10 tick 水平没飞出 1 格 = 要塞就在脚下）。hub：near 直接记 stronghold 并说"往下挖"；否则记这次投掷，和之前的投掷两两试求交点（相隔 ≥ 100 格、不平行、交点不在身后），算出来就记 stronghold（y 按 40）并说"要塞大概在 (x, z)，离这儿 N 格，往西北"，算不出就提示再走远点 / 换方向 |
+| dragon_fight | what, count, delta, text, pos, dim | 任务单 23：打龙打完一场。what = dragon_dead / tired（15 分钟没打死）/ left（离开末地）/ stopped，count = 用时毫秒，delta = 打掉的水晶数，text = 它死的次数。hub 存事件：dragon_dead 说"龙死了！用了 N 分钟…"，tired 说"我打不动了，你来主攻"，其余网页提示 |
 | combat | what, reason, count, delta | 任务单 19：打完一架。借用字段：what = 对手种类 id，reason = 结局 killed / fled / gave_up / stopped / died，count = 用时毫秒，delta = 掉的血。hub 存事件、网页提示"它和僵尸打了一架：打死了，用了 12 秒，掉了 6 血" |
 
 【补丁 2026-10-22】模组侧两条行为：
@@ -393,6 +395,13 @@ snapshot 摘要是一句中文，例如：「你在主世界 (120, 64, -33)，�
   - 模组：`PortalLogic`（纯逻辑：findSite / order / standingSpots / inReach）+ Executor 的四个任务（见 §7.1）；换维度时 `BaritoneBridge.applyDimensionSettings`：下界 / 末地 maxFallHeightNoWater 3 → 2（allowParkour 本来就关着）；`LandmarkScanner.lastFound / lastFoundAtMs` 给 explore 看。打架按 19 暂停：build / light / enter 恢复时重设目标和放置状态，explore 恢复时重发 explore。
   - 珍珠：末影人在 never 名单上，plan_examples 教模型回"珍珠得你来，或者去和猪灵换"。
   - 日志：hub `chat_in … shortcut=go_nether`、`ask_owner plan_id= index=`、`chat_in … shortcut=ask_owner_yes|ask_owner_no`、`ask_owner_timeout`、`build_portal: no blueprint`；模组 `build_portal: origin= axis= blocks= scaffold= stand=`、`build_portal: place X at P via S FACE -> result`、`build_portal: X placed at P (i/n)`、`build_portal: frame complete|incomplete`、`light_portal: flint on P -> result|lit`、`enter_portal: walking into P from DIM|arrived in DIM`、`explore started|found X|5 min, nothing`、`baritone dim settings dim= maxFallHeightNoWater=`。
+- 【任务单 23】末地（2026-10-28，guide-3 §3.3，打龙细则主人定）：
+  - 投眼：模组 Observer.watchEyes 发 eye 事件（见 §6）；hub `EyeLocator`（纯算术）求交点，记 stronghold；"带我去要塞"走任务单 21 的带路（kindOf("要塞") 主世界 = stronghold）。
+  - 找传送门房：固定短语"找末地传送门 / 找传送门房"→ explore，explore 看见 end_portal 地标（任务单 17 的末地传送门框）也算找到；眼由主人放。
+  - 进末地：固定短语"我们进末地 / 进末地 / 去末地"→ 计划 [ask_owner（先说清能做不能做：有弓和几根箭能打水晶、笼子里的得主人打 / 没弓只守着主人；龙飞着打不到俯冲砍；血少躲柱子后吃；主人死了守传送门；自己死了走回来；进吗？）, enter_portal]；enter_portal 认末地传送门方块（END_PORTAL）。
+  - 打龙模式（模组 Combat.tickDragon，只在末地、龙在 160 格内、开关没关时，自动进入不用命令；执行器照旧暂停）每 tick 按优先级（`DragonLogic.decide`）：龙息云 3 格内 → 反方向走 4 格；15 分钟没打死（只说一次）→ 发 dragon_fight tired，之后只守；血 ≤ 8（撤着的要回到 14）→ 找最近的黑曜石柱（48 格内每 2 格取样，脚平面和上面 6 格两层），站到柱子远离龙那面 3 格处吃一口；龙身（部件）6 格内 → 换剑砍部件；主人不在且 60 秒没造成伤害 → 守传送门（进末地时站的那个位置）；有弓箭且有看得见、不在笼子里（周围铁栏杆）、6–40 格的水晶 → 射（水晶没了算打掉一个）；否则守主人（6 格内）或守传送门。"造成伤害"= 挥 / 射之后 2 秒内龙掉血或射过的水晶没了。它死了 deaths+1，回来接着打；龙死 / 离开末地 / 开关关 / "停" → 发 dragon_fight 结束。
+  - 它死了：hub 收 death 时记 diedInEnd（事件 dim 或快照 dim 是末地），重生后不去找主人，而是说"从出生点走回末地传送门去"并派计划 [goto place=末地传送门（任务单 17 的地标查最近 end_portal）, enter_portal]；没记过末地传送门就说"过不去了"。
+  - 日志：hub `event dragon_fight outcome= ms= crystals= deaths=`、`eye near|estimate|throws=`、`respawn_decision died_in_end=true end_portal_known=`、`chat_in … shortcut=go_end`；模组 `event eye yaw= pitch= near=`、`dragon fight start|end`、`dragon: breath N away, dodging|crystal down|shot at|died|15 min, tired`。
 
 
 

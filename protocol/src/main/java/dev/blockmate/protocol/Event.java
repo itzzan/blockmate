@@ -63,6 +63,16 @@ public record Event(EventKind kind, String from, String text, Pos pos, String di
         return new Event(EventKind.DANGER, null, null, pos, dim, null, null, null, null, what);
     }
 
+    /** 任务单 23：主人投的末影之眼飞向哪。yaw 是 MC 的水平角（0 = 南 +z，90 = 西 -x），near = 眼基本不动 / 掉下来（要塞就在附近）。 */
+    public static Event eye(double yaw, double pitch, Pos pos, String dim, boolean near) {
+        return new Event(EventKind.EYE, null, null, pos, dim, null, null, (int) Math.round(pitch), (int) Math.round(yaw), near ? "near" : "flying");
+    }
+
+    /** 任务单 23：打龙打完一场。 */
+    public static Event dragonFight(String outcome, int ms, int crystalsBroken, int deaths, Pos pos, String dim) {
+        return new Event(EventKind.DRAGON_FIGHT, null, String.valueOf(deaths), pos, dim, null, null, crystalsBroken, ms, outcome);
+    }
+
     /** 任务单 21：带路停下了。what = lava / cliff。 */
     public static Event leadPaused(String reason, Pos pos, String dim) {
         return new Event(EventKind.LEAD_PAUSED, null, null, pos, dim, null, null, null, null, reason);

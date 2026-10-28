@@ -59,7 +59,11 @@ public final class Shortcuts {
             Map.entry("找要塞", CommandName.EXPLORE),
             Map.entry("去找要塞", CommandName.EXPLORE),
             Map.entry("找找要塞", CommandName.EXPLORE),
-            Map.entry("找下界要塞", CommandName.EXPLORE));
+            Map.entry("找下界要塞", CommandName.EXPLORE),
+            // 任务单 23
+            Map.entry("找末地传送门", CommandName.EXPLORE),
+            Map.entry("找传送门房", CommandName.EXPLORE),
+            Map.entry("找末地门", CommandName.EXPLORE));
 
     private Shortcuts() {
     }
@@ -91,6 +95,14 @@ public final class Shortcuts {
             "下界走起", "去地狱", "我们去地狱");
     private static final java.util.Set<String> ASK_YES = java.util.Set.of("点", "点吧", "点火", "点燃", "点了", "点上", "去", "好", "好的", "行", "可以",
             "去吧", "嗯", "好嘞", "ok", "开始吧", "继续");
+
+    private static final java.util.Set<String> GO_END = java.util.Set.of("我们进末地", "进末地", "进末地吧", "我们去末地", "去末地", "去末地吧",
+            "进去吧末地", "进传送门吧");
+
+    /** 任务单 23："进末地"：先把能做不能做的说清，问主人，再进门。 */
+    public static boolean isGoEnd(String text) {
+        return GO_END.contains(normalize(text));
+    }
 
     public static boolean isGoNether(String text) {
         return GO_NETHER.contains(normalize(text));
